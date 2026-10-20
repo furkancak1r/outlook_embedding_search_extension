@@ -12,6 +12,7 @@
 //          --keep-alive-ms N    before the last search: keep-alive N ms; after it the worker must close by itself
 //          --keep-alive-min N   keep-alive setting for this run (0 = old behavior: the worker exits after each session)
 //        HatirMail.TestHost.exe <corpus.json> <hatirmail_home> --layout-check [screenshot_dir]
+//        HatirMail.TestHost.exe - <hatirmail_home> --history-check   (recent/saved searches file only, no window: runs on mono)
 // Exit code 0 = pass. Prints only event names, counts, ids and timings (no mail text).
 using System;
 using System.Collections;
@@ -42,6 +43,7 @@ namespace HatirMail
             if (args.Length < 3) { Console.Error.WriteLine("usage: TestHost <corpus.json> <home> <query> [expected_eid] [options]"); return 64; }
             Environment.SetEnvironmentVariable("HATIRMAIL_HOME", args[1]);
             var settings = Settings.Load();
+            if (args[2] == "--history-check") return HistoryCheck(settings) ? 0 : 1;
             if (args[2] == "--layout-check") return LayoutCheck(new JsonSource(args[0]), settings, args.Length > 3 ? args[3] : null);
             string expected = args.Length > 3 && !args[3].StartsWith("--") ? args[3] : null;
             bool index = args.Contains("--index"), expectKeyword = args.Contains("--expect-keyword"), expectIncomplete = args.Contains("--expect-incomplete");
@@ -170,7 +172,11 @@ namespace HatirMail
             // The add-in finds the index file of the worker (same file name rule): the window starts with that store.
             bool indexFound = File.Exists(form.IndexFileOf(src.Stores()[0].Key));
             Console.WriteLine("index_file_found=" + indexFound);
-            bool ok = !attLeft && pids.Count > 0 && indexFound;
+            // A started search is the first recent search, also in the file (the text is compared, never printed).
+            var h = SearchHistory.Load(settings.Data);
+            bool recorded = mode != "search" || h.Recent.Count > 0 && h.Recent[0] == form.QueryText.Trim() && form.History.Recent.FirstOrDefault() == h.Recent[0];
+            Console.WriteLine("history_recorded=" + recorded);
+            bool ok = !attLeft && pids.Count > 0 && indexFound && recorded;
             if (stopAfter >= 0) ok &= reason == "cancelled";
             else
             {
@@ -222,6 +228,7 @@ namespace HatirMail
         static int LayoutCheck(IMailSource src, Settings settings, string shotDir)
         {
             SearchForm.TestScale = 2F;
+            if (File.Exists(SearchHistory.PathIn(settings.Data))) File.Delete(SearchHistory.PathIn(settings.Data)); // the window opens with no searches
             var form = new SearchForm(src, settings) { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false };
             int code = 1;
             form.Shown += (s, e) =>
@@ -253,6 +260,7 @@ namespace HatirMail
                 Console.WriteLine("client_sizes default={0} min={1} root={2}", form.DesignClientSize, form.MinClientSize, root.Size);
                 Console.WriteLine("preview_marked_chars=" + form.PreviewMarkedChars);
                 ok &= form.PreviewMarkedChars > 0;
+                ok &= HistoryUiCheck(form, settings, shotDir);
                 ok &= IndexDeleteCheck(form, settings); // last: it clears the results
                 Console.WriteLine(ok ? "PASS" : "FAIL");
                 code = ok ? 0 : 1;
@@ -302,6 +310,133 @@ namespace HatirMail
             return ok && clamp && !tmpLeft;
         }
 
+        // Recent and saved searches, file rules only (no window: runs on mono on the Mac too). Works in a new folder that
+        // it makes under the test home and deletes at the end. Prints flags only.
+        static bool HistoryCheck(Settings settings)
+        {
+            string dir = Path.Combine(settings.Home, "history-check-" + Guid.NewGuid().ToString("N"));
+            bool ok = true;
+            Action<string, bool> check = (name, pass) => { Console.WriteLine("history_" + name + "=" + (pass ? "ok" : "FAIL")); ok &= pass; };
+            try
+            {
+                var h = SearchHistory.Load(dir); // the folder is not there yet
+                check("empty", h.Recent.Count == 0 && h.Saved.Count == 0 && !h.ReadFailed && !Directory.Exists(dir));
+                h.AddRecent("Kargo faturası"); h.AddRecent("   "); h.AddRecent(null); h.AddRecent(" KARGO faturası ");
+                check("dedupe", h.Recent.Count == 1 && h.Recent[0] == "KARGO faturası");
+                // Turkish ı/I, i/İ: one or two lines, by platform (see SearchHistory.AddRecent). Only "no crash, no loss".
+                h.AddRecent("kargo FATURASI");
+                check("dedupe_turkish", h.Recent.Count >= 1 && h.Recent[0] == "kargo FATURASI");
+                for (int i = 0; i < 25; i++) h.AddRecent("q" + i);
+                check("limit", h.Recent.Count == SearchHistory.MaxRecent && h.Recent[0] == "q24" && h.Recent[19] == "q5");
+                string odd = "Ahmet'in \"kargo\" & fatura – İzmir\\Şube";
+                h.AddRecent(odd);
+                bool added = h.SetSaved("Fatura", "kargo faturası"), updated = h.SetSaved(" fatura ", odd);
+                bool noEmpty = !h.SetSaved("", "a") && !h.SetSaved("b", "  ") && !h.SetSaved(null, null);
+                check("saved", !added && updated && noEmpty && h.Saved.Count == 1 && h.Saved[0].Key == "fatura" && h.Saved[0].Value == odd);
+                var c = h.Clone(); c.Recent.Clear(); c.Saved.Clear();
+                check("clone", h.Recent.Count == 20 && h.Saved.Count == 1);
+                h.Save(); // makes the folder
+                var r = SearchHistory.Load(dir);
+                check("roundtrip", r.Recent.SequenceEqual(h.Recent) && r.Saved.SequenceEqual(h.Saved) && !File.Exists(h.FilePath + ".tmp"));
+                File.WriteAllText(h.FilePath, "{not json");
+                r = SearchHistory.Load(dir);
+                check("corrupt", r.Recent.Count == 0 && r.Saved.Count == 0 && !r.ReadFailed);
+                File.WriteAllText(h.FilePath, "[1, 2]");
+                r = SearchHistory.Load(dir);
+                check("not_object", r.Recent.Count == 0 && r.Saved.Count == 0);
+                File.WriteAllText(h.FilePath, "{\"recent\": [1, \"a\", null, \"A\"], \"saved\": [{\"name\": 5, \"query\": \"q\"}, {\"name\": \"n\", \"query\": \"q\"}, \"x\", {\"name\": \"m\"}]}");
+                r = SearchHistory.Load(dir);
+                check("wrong_types", r.Recent.Count == 1 && r.Recent[0] == "a" && r.Saved.Count == 1 && r.Saved[0].Key == "n");
+                File.WriteAllText(h.FilePath, "{\"recent\": \"a\", \"saved\": {}}");
+                r = SearchHistory.Load(dir);
+                check("wrong_containers", r.Recent.Count == 0 && r.Saved.Count == 0);
+                // A write that fails (the file name is a folder) throws and leaves no temp copy of the search texts.
+                File.Delete(h.FilePath); Directory.CreateDirectory(h.FilePath);
+                bool threw = false;
+                try { h.Save(); } catch (IOException) { threw = true; } catch (UnauthorizedAccessException) { threw = true; }
+                check("write_error", threw && !File.Exists(h.FilePath + ".tmp"));
+            }
+            catch (Exception ex) { Console.WriteLine("history_check exception " + ex.GetType().Name + ": " + ex.Message); ok = false; }
+            finally { if (Directory.Exists(dir)) Directory.Delete(dir, true); } // only the folder made above
+            Console.WriteLine(ok ? "PASS" : "FAIL");
+            return ok;
+        }
+
+        // Ara tab: recent and saved searches in the window (Windows only: WinForms). Starts with no searches file (made by
+        // LayoutCheck) and deletes the file at the end. No worker in the layout check: Ara stops at "Arama bileşeni
+        // bulunamadı", so a search from the menu fills the box but is not recorded (only started searches are).
+        static bool HistoryUiCheck(SearchForm form, Settings settings, string shotDir)
+        {
+            string file = SearchHistory.PathIn(settings.Data);
+            bool ok = true;
+            Action<string, bool> check = (name, pass) => { Console.WriteLine("history_ui_" + name + "=" + (pass ? "ok" : "FAIL")); ok &= pass; };
+            Func<List<ToolStripItem>, string, ToolStripMenuItem> item = (items, text) => items.OfType<ToolStripMenuItem>().FirstOrDefault(x => x.Text == text);
+            check("start_empty", form.History.Recent.Count == 0 && form.History.Saved.Count == 0 && form.Suggestions.Length == 0);
+            string longQ = "Ahmet & Ayşe – sözleşme taslağı fesih bildirim süresi ve ekleri hakkında uzun bir sorgu";
+            form.RememberSearch("kargo faturası"); form.RememberSearch(longQ);
+            form.SetQuery("kargo faturası eylül");
+            bool saved = form.SaveSearchAs("Aylık kargo") && form.StatusText.StartsWith("Arama kaydedildi");
+            form.SetQuery("kargo faturası ekim");
+            bool upd = form.SaveSearchAs("aylık KARGO") && form.StatusText.StartsWith("Kayıtlı arama güncellendi");
+            Application.DoEvents(); // the suggestion list changes after the current message
+            var sug = form.Suggestions;
+            var disk = SearchHistory.Load(settings.Data);
+            check("save", saved && upd && form.History.Saved.Count == 1 && form.History.Saved[0].Value == "kargo faturası ekim" &&
+                          disk.Saved.SequenceEqual(form.History.Saved) && disk.Recent.SequenceEqual(form.History.Recent) && form.History.Recent.Count == 2);
+            check("suggestions", sug.Length == 3 && sug.Contains("kargo faturası") && sug.Contains(longQ) && sug.Contains("kargo faturası ekim"));
+            var menu = form.HistoryMenuItems();
+            var run = item(menu, "aylık KARGO");
+            var recentLong = menu.OfType<ToolStripMenuItem>().FirstOrDefault(x => x.ToolTipText == longQ);
+            check("menu", run != null && run.Enabled && run.ToolTipText == "kargo faturası ekim" && item(menu, "Bu aramayı &kaydet…").Enabled &&
+                          item(menu, "Kayıtlı aramayı &sil").DropDownItems.Count == 1 && item(menu, "Son aramaları &temizle").Enabled &&
+                          recentLong != null && recentLong.Text == SearchForm.MenuText(longQ) && recentLong.Text.Contains("&&") && recentLong.Text.EndsWith("…") &&
+                          recentLong.Text.Replace("&&", "&").Length == 60);
+            form.SetQuery("");
+            run.PerformClick(); // one click: the query goes into the box and Ara runs (it stops here: no worker installed)
+            check("run_click", form.QueryText == "kargo faturası ekim" && form.History.Recent.Count == 2 && form.StatusText.StartsWith("Arama bileşeni bulunamadı"));
+            // Name dialog: layout at 2x, Kaydet off for an empty name.
+            using (var d = new SearchForm.NameDialog(form, "Aylık kargo") { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) })
+            {
+                d.Show(form); Application.DoEvents();
+                bool fits = Check(d, "name-dialog");
+                if (shotDir != null) Shot(d.Body, Path.Combine(shotDir, "ui-name-dialog.png"));
+                var okBtn = SearchForm.AllControls(d).OfType<Button>().First(x => x.DialogResult == DialogResult.OK);
+                d.Box.Text = "  "; bool off = !okBtn.Enabled;
+                d.Box.Text = "x"; bool on = okBtn.Enabled;
+                check("name_dialog", fits && off && on && d.Box.MaxLength == 80 && d.AcceptButton == okBtn);
+                d.Close();
+            }
+            menu = form.HistoryMenuItems();
+            item(menu, "Son aramaları &temizle").PerformClick();
+            disk = SearchHistory.Load(settings.Data);
+            check("clear_recent", form.History.Recent.Count == 0 && form.History.Saved.Count == 1 && disk.Recent.Count == 0 && disk.Saved.Count == 1 &&
+                                  form.StatusText.StartsWith("Son aramalar silindi"));
+            menu = form.HistoryMenuItems();
+            item(menu, "Kayıtlı aramayı &sil").DropDownItems[0].PerformClick();
+            menu = form.HistoryMenuItems();
+            check("delete_saved", form.History.Saved.Count == 0 && SearchHistory.Load(settings.Data).Saved.Count == 0 && item(menu, "(kayıtlı arama yok)") != null &&
+                                  !item(menu, "Kayıtlı aramayı &sil").Enabled && !item(menu, "Son aramaları &temizle").Enabled);
+            // A file locked by another program at the window open: no write over it (that would delete its searches).
+            form.RememberSearch("önceki arama");
+            bool blocked;
+            using (new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                form.ReloadHistory();
+                blocked = form.History.ReadFailed && !form.SaveSearchAs("y") && form.StatusText.Contains("aramalar dosyası okunamadı");
+            }
+            bool kept = form.SaveSearchAs("y") && form.History.Recent.SequenceEqual(new[] { "önceki arama" }) && SearchHistory.Load(settings.Data).Saved.Count == 1;
+            check("locked_file", blocked && kept);
+            // A write error: the window keeps the saved state, no temp copy stays.
+            File.Delete(file); Directory.CreateDirectory(file);
+            form.SetQuery("z");
+            bool failed = !form.SaveSearchAs("z") && form.StatusText.StartsWith("Arama kaydedilemedi") && form.History.Saved.Count == 1 && !File.Exists(file + ".tmp");
+            Directory.Delete(file);
+            check("write_error", failed);
+            if (File.Exists(file)) File.Delete(file);
+            form.ReloadHistory(); Application.DoEvents();
+            return ok;
+        }
+
         // Ayarlar "İndeksi sil". The confirmation dialog is modal: the check calls DeleteIndex (the code behind "Evet").
         // A locked index file stops the delete without an exception; after the unlock, the second press deletes
         // data\index and data\tmp-att, and settings.json stays. Runs only when the test data folder has no index.
@@ -314,6 +449,8 @@ namespace HatirMail
             string db = Path.Combine(index, "a.sqlite");
             foreach (var f in new[] { db, db + "-wal", db + "-shm", Path.Combine(att, "000001.bin") }) File.WriteAllText(f, "x");
             File.WriteAllText(settings.ConfigFile, "{\"threads\": 4}");
+            string searches = SearchHistory.PathIn(settings.Data);
+            File.WriteAllText(searches, "{}");
             bool locked;
             using (new FileStream(db, FileMode.Open, FileAccess.Read, FileShare.None))
             {
@@ -322,10 +459,10 @@ namespace HatirMail
             }
             form.DeleteIndex();
             bool deleted = !Directory.Exists(index) && !Directory.Exists(att) && form.StatusText.StartsWith("İndeks silindi");
-            bool kept = File.Exists(settings.ConfigFile), cleared = form.ResultCount == 0, enabled = btn != null && btn.Enabled;
-            File.Delete(settings.ConfigFile);
+            bool kept = File.Exists(settings.ConfigFile) && File.Exists(searches), cleared = form.ResultCount == 0, enabled = btn != null && btn.Enabled;
+            File.Delete(settings.ConfigFile); File.Delete(searches);
             bool ok = enabled && locked && deleted && kept && cleared;
-            Console.WriteLine("index_delete button={0} locked={1} deleted={2} settings_kept={3} results_cleared={4} -> {5}",
+            Console.WriteLine("index_delete button={0} locked={1} deleted={2} settings_and_searches_kept={3} results_cleared={4} -> {5}",
                               enabled, locked, deleted, kept, cleared, ok ? "ok" : "FAIL");
             return ok;
         }

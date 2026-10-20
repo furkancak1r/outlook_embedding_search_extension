@@ -35,7 +35,9 @@ namespace HatirMail
         readonly TabPage tabSearch = new TabPage("Ara"), tabIndex = new TabPage("İndeks"), tabSettings = new TabPage("Ayarlar");
         // Ara
         readonly TextBox query = new TextBox();
-        readonly Button searchBtn, stopBtn, openBtn;
+        readonly Button searchBtn, stopBtn, openBtn, historyBtn;
+        readonly ContextMenuStrip historyMenu = new ContextMenuStrip { ShowItemToolTips = true };
+        SearchHistory history; // recent and saved searches (data\searches.json)
         readonly Label scopeLine = new Label();
         readonly ListView list = new ListView();
         readonly RichTextBox preview = new RichTextBox();
@@ -88,6 +90,7 @@ namespace HatirMail
             int line = TextRenderer.MeasureText("Ag", Font).Height;
 
             searchBtn = MakeButton("&Ara", true); stopBtn = MakeButton("D&urdur", false); openBtn = MakeButton("Outlook'ta A&ç", false);
+            historyBtn = MakeButton("Ara&malar ▼", false);
             indexBtn = MakeButton("İndekslemeyi &başlat", true); indexStopBtn = MakeButton("&Durdur", false);
             refreshBtn = MakeButton("Durumu &yenile", false);
             saveBtn = MakeButton("&Kaydet", true); defaultsBtn = MakeButton("&Varsayılan değerler", false);
@@ -116,13 +119,22 @@ namespace HatirMail
             foreach (TabPage p in tabs.TabPages) { p.Padding = new Padding(S(12)); p.UseVisualStyleBackColor = true; }
 
             // ---- Ara: query row, hint, scope line, results, preview
-            var qrow = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 4, RowCount = 1, AutoSize = true };
+            var qrow = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 5, RowCount = 1, AutoSize = true };
             qrow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 3; i++) qrow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            for (int i = 0; i < 4; i++) qrow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             query.Font = new Font("Segoe UI", 12f * pt); query.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             query.Margin = new Padding(0, S(3), S(6), S(3)); query.AccessibleName = "Arama metni";
             query.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; StartSearch(); } };
-            qrow.Controls.Add(query, 0, 0); qrow.Controls.Add(searchBtn, 1, 0); qrow.Controls.Add(stopBtn, 2, 0); qrow.Controls.Add(openBtn, 3, 0);
+            // Suggestions while typing: the Windows autocomplete list (prefix match) with recent and saved searches.
+            history = SearchHistory.Load(settings.Data);
+            query.AutoCompleteMode = AutoCompleteMode.Suggest; query.AutoCompleteSource = AutoCompleteSource.CustomSource;
+            RefreshSuggestions();
+            historyBtn.AccessibleName = "Son ve kayıtlı aramalar"; historyBtn.AccessibleRole = AccessibleRole.ButtonMenu;
+            historyBtn.Click += (s, e) => { BuildHistoryMenu(); historyMenu.Show(historyBtn, new Point(0, historyBtn.Height)); };
+            historyMenu.Font = Font; // the window font (DPI test scale included), not the system menu font
+            Disposed += (s, e) => historyMenu.Dispose(); // not a child control
+            qrow.Controls.Add(query, 0, 0); qrow.Controls.Add(historyBtn, 1, 0); qrow.Controls.Add(searchBtn, 2, 0);
+            qrow.Controls.Add(stopBtn, 3, 0); qrow.Controls.Add(openBtn, 4, 0);
             var hint = Wrap(new Label { ForeColor = SystemColors.GrayText, Padding = new Padding(0, S(4), 0, 0),
                                         Text = "İpucu: kişi, konu, yaklaşık tarih ya da ekteki bir sözcük yazın. Örnek: geçen ay Ahmet'ten gelen kargo faturası" });
             Wrap(scopeLine); scopeLine.Padding = new Padding(0, S(4), 0, S(8));
@@ -350,7 +362,7 @@ namespace HatirMail
             if (session != null) return;
             if (MessageBox.Show(this, "Bu bilgisayardaki arama indeksi silinsin mi?\n\n" +
                                 "Silinecekler: tüm posta kutularının indeks dosyaları (posta metni, kelime ve anlam indeksi, eklerden okunan metin).\n" +
-                                "Silinmeyecekler: Outlook'taki postalarınız ve ekleri, ayarlarınız.\n\n" +
+                                "Silinmeyecekler: Outlook'taki postalarınız ve ekleri, ayarlarınız, son ve kayıtlı aramalarınız.\n\n" +
                                 "Sonra arama yapmak için İndeks sekmesinden indekslemeyi baştan başlatmanız gerekir. Büyük bir posta kutusunda bu saatler sürebilir.",
                                 "HatırMail", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             DeleteIndex();
@@ -381,6 +393,149 @@ namespace HatirMail
             list.Items.Clear(); ShowPreview();
             cov.Clear(); UpdateSummary(); phase.Text = "İndeksleme çalışmıyor.";
             StartStatus(); // the real state; a status check makes no index file for an unknown store
+        }
+
+        // ------------------------------------------------------------------ recent and saved searches (data\searches.json)
+        /// <summary>A search starts (after its checks): it goes first in the recent list. A write error does not stop
+        /// the search; the list then shows what the file has.</summary>
+        public void RememberSearch(string q) { Change(h => h.AddRecent(q), null); }
+
+        /// <summary>Save the text of the search box under name ("Bu aramayı kaydet…"). The same name replaces the query
+        /// of that saved search. Returns false when nothing was saved.</summary>
+        public bool SaveSearchAs(string name)
+        {
+            string q = query.Text.Trim();
+            name = (name ?? "").Trim();
+            if (q.Length == 0 || name.Length == 0) return false;
+            bool updated = false;
+            if (!Change(h => updated = h.SetSaved(name, q), "Arama kaydedilemedi")) return false;
+            SetStatus((updated ? "Kayıtlı arama güncellendi: " : "Arama kaydedildi: ") + name + ". Aramalar düğmesinden tek tıklamayla çalıştırabilirsiniz.");
+            return true;
+        }
+
+        public void ClearRecent()
+        {
+            if (Change(h => h.Recent.Clear(), "Son aramalar silinemedi")) SetStatus("Son aramalar silindi. Kayıtlı aramalar duruyor.");
+        }
+
+        void DeleteSaved(string name)
+        {
+            if (Change(h => h.Saved.RemoveAll(x => x.Key == name), "Kayıtlı arama silinemedi")) SetStatus("Kayıtlı arama silindi: " + name + ".");
+        }
+
+        public void RunSearch(string q) { query.Text = q; query.SelectionStart = q.Length; StartSearch(); }
+
+        /// <summary>Change a copy of the lists and write it; the window takes the copy only after a good write, so it
+        /// never shows a change that is not saved. A file that could not be read at the window open is read again
+        /// first: a write over it would delete its searches. failText null = no status text (recent searches: a write
+        /// error does not stop the search).</summary>
+        bool Change(Action<SearchHistory> edit, string failText)
+        {
+            if (history.ReadFailed)
+            {
+                var again = SearchHistory.Load(settings.Data);
+                if (again.ReadFailed) { if (failText != null) SetStatus(failText + " (aramalar dosyası okunamadı). Biraz sonra yeniden deneyin."); return false; }
+                history = again;
+            }
+            var next = history.Clone();
+            edit(next);
+            try { next.Save(); }
+            catch (Exception ex)
+            {
+                if (failText != null) SetStatus(failText + " (" + ex.GetType().Name + "). Biraz sonra yeniden deneyin.");
+                return false;
+            }
+            history = next;
+            RefreshSuggestions();
+            return true;
+        }
+
+        void RefreshSuggestions()
+        {
+            var c = new AutoCompleteStringCollection();
+            c.AddRange(history.Recent.Concat(history.Saved.Select(x => x.Value)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            // ponytail: a new collection, set after the current message: a change of the source while its list is open
+            // (Enter in the search box starts the search) can crash WinForms. Before the window exists: at once.
+            if (IsHandleCreated) BeginInvoke((Action)(() => query.AutoCompleteCustomSource = c));
+            else query.AutoCompleteCustomSource = c;
+        }
+
+        // Built at each open: the lists and the button states are current.
+        void BuildHistoryMenu()
+        {
+            foreach (var old in historyMenu.Items.Cast<ToolStripItem>().ToList()) old.Dispose(); // also the submenu window
+            historyMenu.Items.Clear();
+            bool canRun = searchBtn.Enabled; // as Ara: off while a search runs
+            Func<string, ToolStripMenuItem> head = t => new ToolStripMenuItem(t) { Enabled = false, Font = boldFont };
+            Func<string, string, ToolStripMenuItem> run = (text, q) =>
+            {
+                var it = new ToolStripMenuItem(MenuText(text)) { ToolTipText = q, Enabled = canRun };
+                it.Click += (s, e) => RunSearch(q);
+                return it;
+            };
+            historyMenu.Items.Add(head("Kayıtlı aramalar"));
+            if (history.Saved.Count == 0) historyMenu.Items.Add(new ToolStripMenuItem("(kayıtlı arama yok)") { Enabled = false });
+            foreach (var kv in history.Saved) historyMenu.Items.Add(run(kv.Key, kv.Value));
+            var save = new ToolStripMenuItem("Bu aramayı &kaydet…") { Enabled = query.Text.Trim().Length > 0 };
+            save.Click += (s, e) => AskSaveSearch();
+            var del = new ToolStripMenuItem("Kayıtlı aramayı &sil") { Enabled = history.Saved.Count > 0 };
+            foreach (var kv in history.Saved)
+            {
+                string name = kv.Key;
+                var it = new ToolStripMenuItem(MenuText(name)) { ToolTipText = kv.Value };
+                it.Click += (s, e) => DeleteSaved(name);
+                del.DropDownItems.Add(it);
+            }
+            historyMenu.Items.Add(save); historyMenu.Items.Add(del);
+            historyMenu.Items.Add(new ToolStripSeparator());
+            historyMenu.Items.Add(head("Son aramalar"));
+            if (history.Recent.Count == 0) historyMenu.Items.Add(new ToolStripMenuItem("(son arama yok)") { Enabled = false });
+            foreach (var q in history.Recent) historyMenu.Items.Add(run(q, q));
+            var clear = new ToolStripMenuItem("Son aramaları &temizle") { Enabled = history.Recent.Count > 0 };
+            clear.Click += (s, e) => ClearRecent();
+            historyMenu.Items.Add(clear);
+        }
+
+        /// <summary>Menu text: at most 60 characters; "&" stays a character (not a shortcut letter).</summary>
+        public static string MenuText(string t) { return (t.Length > 60 ? t.Substring(0, 59) + "…" : t).Replace("&", "&&"); }
+
+        void AskSaveSearch()
+        {
+            string q = query.Text.Trim();
+            if (q.Length == 0) return;
+            // The name of a saved search with this query, else the start of the query.
+            string name = history.Saved.Where(x => string.Equals(x.Value, q, StringComparison.OrdinalIgnoreCase)).Select(x => x.Key).FirstOrDefault()
+                          ?? (q.Length > 40 ? q.Substring(0, 40).TrimEnd() : q);
+            using (var d = new NameDialog(this, name))
+                if (d.ShowDialog(this) == DialogResult.OK) SaveSearchAs(d.Box.Text);
+        }
+
+        /// <summary>The name of a saved search (modal). Kaydet is off while the name is empty.</summary>
+        public sealed class NameDialog : Form
+        {
+            public readonly TextBox Box = new TextBox();
+            public readonly TableLayoutPanel Body = new TableLayoutPanel { AutoSize = true, ColumnCount = 1 };
+
+            public NameDialog(SearchForm o, string name)
+            {
+                Text = "Aramayı kaydet"; Font = o.Font; AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.FixedDialog;
+                MaximizeBox = MinimizeBox = false; ShowInTaskbar = false; StartPosition = FormStartPosition.CenterParent;
+                var l = new Label { AutoSize = true, Text = "Aramanın adı (Aramalar menüsünde görünür):", Margin = new Padding(0, 0, 0, o.S(4)), UseCompatibleTextRendering = false };
+                Box.Width = o.S(380); Box.MaxLength = 80; Box.Text = name; Box.AccessibleName = "Aramanın adı"; Box.Margin = new Padding(0, 0, 0, o.S(12));
+                var ok = o.MakeButton("&Kaydet", true); var cancel = o.MakeButton("İptal", false);
+                ok.DialogResult = DialogResult.OK; cancel.DialogResult = DialogResult.Cancel;
+                ok.UseCompatibleTextRendering = cancel.UseCompatibleTextRendering = false;
+                var b = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, Margin = new Padding(0) };
+                b.Controls.Add(ok); b.Controls.Add(cancel);
+                Body.Controls.Add(l); Body.Controls.Add(Box); Body.Controls.Add(b);
+                Body.Location = new Point(o.S(14), o.S(12));
+                Controls.Add(Body);
+                var ps = Body.GetPreferredSize(Size.Empty);
+                ClientSize = new Size(ps.Width + o.S(28), ps.Height + o.S(22));
+                AcceptButton = ok; CancelButton = cancel;
+                Box.TextChanged += (s, e) => ok.Enabled = Box.Text.Trim().Length > 0;
+                ok.Enabled = name.Trim().Length > 0;
+            }
         }
 
         // ------------------------------------------------------------------ scope
@@ -487,6 +642,7 @@ namespace HatirMail
             }
             StoreItem st; List<FolderInfo> sel;
             if (!CanStart(out st, out sel)) return;
+            RememberSearch(q);
             list.Items.Clear(); ShowPreview();
             EventNames.Clear(); modelSeen = false;
             lastStoreId = st.Id;
@@ -978,6 +1134,11 @@ namespace HatirMail
         public List<KeyValuePair<string, string>> FolderIds() { return folders.Select(f => new KeyValuePair<string, string>(f.Id, f.Path)).ToList(); }
         public void Feed(string mode, Dictionary<string, object> ev) { OnEvent(mode, ev); } // test hook: a worker event
         public string IndexFileOf(string storeId) { return IndexFile(storeId); }          // test hook
+        public string QueryText { get { return query.Text; } }                            // test hooks: searches
+        public SearchHistory History { get { return history; } }
+        public void ReloadHistory() { history = SearchHistory.Load(settings.Data); RefreshSuggestions(); } // as at the window open
+        public string[] Suggestions { get { return query.AutoCompleteCustomSource.Cast<string>().ToArray(); } }
+        public List<ToolStripItem> HistoryMenuItems() { BuildHistoryMenu(); return historyMenu.Items.Cast<ToolStripItem>().ToList(); }
 
         class StoreItem { public string Id, Name; public override string ToString() { return Name; } }
     }

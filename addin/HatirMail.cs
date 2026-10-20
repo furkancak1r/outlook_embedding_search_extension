@@ -181,6 +181,96 @@ namespace HatirMail
         }
     }
 
+    /// <summary>Recent and saved searches (Ara tab): data\searches.json on this PC only. Never sent, never logged.
+    /// Uninstall without -KeepData deletes the file; "İndeksi sil" keeps it.</summary>
+    public class SearchHistory
+    {
+        public const int MaxRecent = 20;
+        public readonly string FilePath;
+        public readonly List<string> Recent = new List<string>();                                       // newest first
+        public readonly List<KeyValuePair<string, string>> Saved = new List<KeyValuePair<string, string>>(); // (name, query)
+        /// <summary>The file is there but could not be read (locked by an antivirus or backup program): the lists are
+        /// empty, and a save would delete the searches in the file. The window reads again before the next change.</summary>
+        public bool ReadFailed;
+
+        SearchHistory(string filePath) { FilePath = filePath; }
+
+        public static string PathIn(string dataDir) { return Path.Combine(dataDir, "searches.json"); }
+
+        public SearchHistory Clone()
+        {
+            var c = new SearchHistory(FilePath);
+            c.Recent.AddRange(Recent); c.Saved.AddRange(Saved);
+            return c;
+        }
+
+        /// <summary>ponytail: a file with bad content (corrupt, or a mistake in a hand edit) gives empty lists, and the
+        /// next change writes a new file over it. Items of a wrong type are skipped.</summary>
+        public static SearchHistory Load(string dataDir)
+        {
+            var h = new SearchHistory(PathIn(dataDir));
+            string text;
+            try { if (!File.Exists(h.FilePath)) return h; text = File.ReadAllText(h.FilePath, Encoding.UTF8); }
+            catch { h.ReadFailed = true; return h; }
+            try
+            {
+                var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(text);
+                object v;
+                if (d.TryGetValue("recent", out v) && v is System.Collections.ArrayList)
+                    foreach (var q in ((System.Collections.ArrayList)v).OfType<string>().Reverse()) h.AddRecent(q); // same rules as new searches
+                if (d.TryGetValue("saved", out v) && v is System.Collections.ArrayList)
+                    foreach (var s in ((System.Collections.ArrayList)v).OfType<Dictionary<string, object>>())
+                    {
+                        object n, q;
+                        if (s.TryGetValue("name", out n) && s.TryGetValue("query", out q)) h.SetSaved(n as string, q as string);
+                    }
+            }
+            catch { h.Recent.Clear(); h.Saved.Clear(); }
+            return h;
+        }
+
+        /// <summary>Put q first. The same text in another case is one search. At most MaxRecent.
+        /// ponytail: ordinal case rules can leave the Turkish ı/I and i/İ unpaired ("faturası" and "FATURASI" can stay two
+        /// lines; mono does so); tr-TR rules would break English text ("mail"/"MAIL"). Harmless: one more line in the list.</summary>
+        public void AddRecent(string q)
+        {
+            q = (q ?? "").Trim();
+            if (q.Length == 0) return;
+            Recent.RemoveAll(x => string.Equals(x, q, StringComparison.OrdinalIgnoreCase));
+            Recent.Insert(0, q);
+            if (Recent.Count > MaxRecent) Recent.RemoveRange(MaxRecent, Recent.Count - MaxRecent);
+        }
+
+        /// <summary>Save query under name. A saved search with the same name (any case) gets the new name and query in its
+        /// place: returns true. An empty name or query changes nothing.</summary>
+        public bool SetSaved(string name, string query)
+        {
+            name = (name ?? "").Trim(); query = (query ?? "").Trim();
+            if (name.Length == 0 || query.Length == 0) return false;
+            int i = Saved.FindIndex(x => string.Equals(x.Key, name, StringComparison.OrdinalIgnoreCase));
+            var kv = new KeyValuePair<string, string>(name, query);
+            if (i >= 0) Saved[i] = kv; else Saved.Add(kv);
+            return i >= 0;
+        }
+
+        /// <summary>Write the file (temp file first, as Settings.Save). Makes the data folder if it is not there.</summary>
+        public void Save()
+        {
+            var d = new Dictionary<string, object> {
+                {"recent", Recent},
+                {"saved", Saved.Select(x => new Dictionary<string, object> { {"name", x.Key}, {"query", x.Value} }).ToList()} };
+            Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
+            string tmp = FilePath + ".tmp";
+            try
+            {
+                File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(d), new UTF8Encoding(false));
+                if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
+                else File.Move(tmp, FilePath);
+            }
+            catch { try { File.Delete(tmp); } catch { } throw; } // no second copy of the search texts stays
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Mail source abstraction: Outlook (late-bound COM) or a JSON file (TestHost, no Outlook).
     // ---------------------------------------------------------------------------------------------

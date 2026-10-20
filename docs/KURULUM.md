@@ -119,6 +119,19 @@ sonraki aramaya ya da İndeks sekmesine kalır. Arama kutusunun altındaki satı
 İndeksleme sürerken **Ara**'ya basarsanız HatırMail önce indekslemeyi durdurmak için onay ister. Aynı anda yalnız bir
 arama işlemi çalışır.
 
+### Son aramalar ve kayıtlı aramalar
+
+HatırMail başlattığınız son 20 aramayı bu bilgisayarda saklar. Sık yaptığınız bir aramayı bir adla kaydedebilirsiniz.
+
+- **Öneri:** Arama kutusuna yazmaya başlayın. Aynı harflerle başlayan son ve kayıtlı aramalar bir listede görünür. Ok
+  tuşlarıyla birini seçin ve Enter'a basın.
+- **Tek tıklamayla arama:** Arama kutusunun yanındaki **Aramalar ▼** düğmesine basın (kısayol: Alt+M). Kayıtlı ya da son
+  aramalardan birine tıklayın. Arama hemen başlar.
+- **Kaydetme:** Aramayı kutuya yazın, **Aramalar ▼** > **Bu aramayı kaydet…** öğesine basın, bir ad yazın ve **Kaydet**'e
+  basın. Aynı adla yeniden kaydederseniz eski kaydın sorgusu değişir.
+- **Silme:** **Aramalar ▼** > **Kayıtlı aramayı sil** ya da **Son aramaları temizle**. Son aramaları temizlemek kayıtlı
+  aramaları silmez.
+
 ### Ek içeriği
 
 HatırMail eklerin içindeki metni de arar:
@@ -181,20 +194,20 @@ Yerel arama verilerini gizlilik için ya da bir sorunu gidermek için silebilirs
 
 - Silinenler: `data\index` (her posta kutusu için posta metni, kelime ve anlam indeksi, eklerden okunan metin) ve
   `data\tmp-att` (eklerin geçici kopyaları).
-- Silinmeyenler: Outlook'taki postalar ve ekler, `settings.json`.
+- Silinmeyenler: Outlook'taki postalar ve ekler, `settings.json`, son ve kayıtlı aramalar (`data\searches.json`).
 - Hazır tutulan yapay zekâ modeli de kapanır.
 - Silme yarıda kalırsa (başka bir program bir dosyayı kullanıyorsa) durum çubuğunda "İndeks silinemedi" yazar.
   Biraz bekleyin ve yeniden deneyin.
 
 ## Kaldırma
 
-> **Dikkat:** Outlook'u kapatın. `-KeepData` vermezseniz yerel indeks silinir. Outlook'taki postalarınız hiçbir durumda silinmez.
+> **Dikkat:** Outlook'u kapatın. `-KeepData` vermezseniz yerel indeks, ayarlar ve son/kayıtlı aramalar silinir. Outlook'taki postalarınız hiçbir durumda silinmez.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail\uninstall.ps1"
 ```
 
-- İndeksi saklamak için: `... uninstall.ps1 -KeepData`
+- İndeksi, ayarları ve aramaları saklamak için: `... uninstall.ps1 -KeepData`
 - Kaldırma betiği yalnız kurulumun oluşturduğu kayıt anahtarlarını ve dosyaları siler.
 
 ## Gizlilik
@@ -209,6 +222,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail
   hemen siler; arama bitince klasör de silinir. Asıl eke ve postaya dokunulmaz.
 - İndeksi istediğiniz zaman **Ayarlar** sekmesindeki **İndeksi sil** düğmesiyle silebilirsiniz ("İndeksi silme"
   bölümüne bakın).
+- Son ve kayıtlı aramalar yalnız `%LOCALAPPDATA%\HatirMail\data\searches.json` dosyasında düz metin olarak durur. Bu
+  dosya hiçbir yere gönderilmez ve günlüğe yazılmaz. **Aramalar ▼** menüsünden silebilirsiniz ("Son aramalar ve kayıtlı
+  aramalar" bölümüne bakın).
 - Eklenti ile arama işlemi arasında ağ bağlantısı yoktur; iletişim yalnız işlemin kendi giriş/çıkış kanallarıyla yapılır.
 
 ## Sorun giderme

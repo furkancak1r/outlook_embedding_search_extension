@@ -177,6 +177,11 @@ Outlook.exe (Klasik)
   ve ek metni önbelleği (`att_texts`, `fts_att`) aynı SQLite dosyasındadır. Silmeden önce hazır tutulan worker kapanır.
   Oturum sürerken düğme kapalıdır; bu yüzden hiçbir worker dosyaları açık tutmaz. `settings.json` kalır. Worker ve
   protokol değişmez. Silmeden sonraki durum okuması yeni dosya açmaz (bilinmeyen posta kutusu kuralı).
+- **Son ve kayıtlı aramalar (20 Ekim, kullanıcı isteği):** eklenti başlayan her aramanın metnini `data\searches.json`
+  dosyasına yazar (en çok 20 son arama ve adlandırılmış kayıtlı aramalar). Öneriler Windows'un otomatik tamamlama
+  listesiyle gösterilir. Dosya yalnız eklentide okunur ve yazılır; worker ve protokol değişmez. **İndeksi sil** bu dosyayı
+  silmez; `-KeepData` olmadan kaldırma siler. Okunamayan (kilitli) dosyanın üstüne yazılmaz; yazma hatasında pencere
+  dosyadaki durumu gösterir ve geçici kopya kalmaz.
 - Eklenti ile worker arasında soket yoktur. Oturum belirteci (`HM_SESSION`) ortam değişkeniyle verilir;
   worker eşleşmeyen `begin` mesajını reddeder ve hiçbir dosya yazmaz.
 

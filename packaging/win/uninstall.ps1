@@ -1,12 +1,12 @@
-﻿<#
+<#
 HatirMail per-user uninstaller. Removes only what install.ps1 created.
 
 Usage:
   powershell -NoProfile -ExecutionPolicy Bypass -File uninstall.ps1 [-InstallDir <dir>] [-KeepData] [-SkipRegistration]
-  -KeepData          : keep data\ (the local search index) and settings.json
+  -KeepData          : keep data\ (the local search index, recent and saved searches) and settings.json
   -SkipRegistration  : do not touch the registry (for isolated test installs)
   -Machine           : also remove the per-machine COM class entries (HKLM; needs administrator rights)
-The local index is deleted unless -KeepData is given. Mail in Outlook is never touched.
+The local index and the recent/saved searches are deleted unless -KeepData is given. Mail in Outlook is never touched.
 #>
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'HatirMail'),
