@@ -1,0 +1,445 @@
+{
+ "now": "2026-11-05T12:00:00",
+ "store": {
+  "id": "STORE-ATT-TEST",
+  "name": "Ek testi"
+ },
+ "folders": [
+  {
+   "id": "F-INBOX",
+   "path": "\\Gelen Kutusu"
+  }
+ ],
+ "messages": [
+  {
+   "id": "A01",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-09-30T17:10:00",
+   "subject": "Sayım dosyası",
+   "from_name": "Kemal Arslan",
+   "from_addr": "kemal@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-09-30T17:10:00",
+   "attachments": [
+    "Stok_Sayim_Eylul.xlsx"
+   ],
+   "att_paths": [
+    "att/Stok_Sayim_Eylul.xlsx"
+   ],
+   "body": "Merhaba,\n\nDosya ektedir. Bilginize.\n\nİyi çalışmalar.",
+   "lang": "tr"
+  },
+  {
+   "id": "A02",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-10-31T16:40:00",
+   "subject": "Sayım dosyası",
+   "from_name": "Kemal Arslan",
+   "from_addr": "kemal@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-10-31T16:40:00",
+   "attachments": [
+    "Stok_Sayim_Ekim.xlsx"
+   ],
+   "att_paths": [
+    "att/Stok_Sayim_Ekim.xlsx"
+   ],
+   "body": "Merhaba,\n\nDosya ektedir. Bilginize.\n\nİyi çalışmalar.",
+   "lang": "tr"
+  },
+  {
+   "id": "A03",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-06-12T10:05:00",
+   "subject": "Taslak",
+   "from_name": "Selin Koç",
+   "from_addr": "selin@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-06-12T10:05:00",
+   "attachments": [
+    "Kira_Sozlesmesi_Taslak.docx"
+   ],
+   "att_paths": [
+    "att/Kira_Sozlesmesi_Taslak.docx"
+   ],
+   "body": "Merhaba,\n\nTaslak ektedir, yorumlarınızı bekliyorum.",
+   "lang": "tr"
+  },
+  {
+   "id": "A04",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-07-02T09:30:00",
+   "subject": "Sözleşme imzalandı",
+   "from_name": "Selin Koç",
+   "from_addr": "selin@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-07-02T09:30:00",
+   "attachments": [],
+   "att_paths": [],
+   "body": "Merhaba,\n\nSözleşme dün imzalandı, asıl nüsha muhasebede.",
+   "lang": "tr"
+  },
+  {
+   "id": "A05",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-10-08T14:20:00",
+   "subject": "Sunum",
+   "from_name": "Deniz Aydın",
+   "from_addr": "deniz@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-10-08T14:20:00",
+   "attachments": [
+    "Ceyrek_Sunumu_Q3.pptx"
+   ],
+   "att_paths": [
+    "att/Ceyrek_Sunumu_Q3.pptx"
+   ],
+   "body": "Merhaba,\n\nDosya ektedir. Bilginize.\n\nİyi çalışmalar.",
+   "lang": "tr"
+  },
+  {
+   "id": "A06",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-08-14T11:00:00",
+   "subject": "Fatura",
+   "from_name": "Hızlı Lojistik",
+   "from_addr": "hızlı@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-08-14T11:00:00",
+   "attachments": [
+    "Fatura_TR4471.pdf"
+   ],
+   "att_paths": [
+    "att/Fatura_TR4471.pdf"
+   ],
+   "body": "Merhaba,\n\nDosya ektedir. Bilginize.\n\nİyi çalışmalar.",
+   "lang": "tr"
+  },
+  {
+   "id": "A07",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-08-21T11:00:00",
+   "subject": "Fatura",
+   "from_name": "Hızlı Lojistik",
+   "from_addr": "hızlı@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-08-21T11:00:00",
+   "attachments": [
+    "Fatura_TR4472.pdf"
+   ],
+   "att_paths": [
+    "att/Fatura_TR4472.pdf"
+   ],
+   "body": "Merhaba,\n\nDosya ektedir. Bilginize.\n\nİyi çalışmalar.",
+   "lang": "tr"
+  },
+  {
+   "id": "A08",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-08-15T08:45:00",
+   "subject": "Tarama",
+   "from_name": "Tarayıcı",
+   "from_addr": "tarayıcı@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-08-15T08:45:00",
+   "attachments": [
+    "Tarama_0042.pdf"
+   ],
+   "att_paths": [
+    "att/Tarama_0042.pdf"
+   ],
+   "body": "",
+   "lang": "tr"
+  },
+  {
+   "id": "A09",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-09-03T13:15:00",
+   "subject": "Fotoğraf",
+   "from_name": "Murat Şahin",
+   "from_addr": "murat@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-09-03T13:15:00",
+   "attachments": [
+    "Hasarli_Konteyner.jpg"
+   ],
+   "att_paths": [
+    "att/Hasarli_Konteyner.jpg"
+   ],
+   "body": "Merhaba,\n\nSahadan gelen fotoğraf ektedir.",
+   "lang": "tr"
+  },
+  {
+   "id": "A10",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-10-02T15:50:00",
+   "subject": "Bakar mısın?",
+   "from_name": "Ece Yıldız",
+   "from_addr": "ece@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-10-02T15:50:00",
+   "attachments": [
+    "Ekran_Goruntusu.png"
+   ],
+   "att_paths": [
+    "att/Ekran_Goruntusu.png"
+   ],
+   "body": "Selam,\n\nEkteki ekrana bakabilir misin?",
+   "lang": "tr"
+  },
+  {
+   "id": "A11",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-05-20T10:10:00",
+   "subject": "Notlar",
+   "from_name": "Okan Er",
+   "from_addr": "okan@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-05-20T10:10:00",
+   "attachments": [
+    "Kalibrasyon_Notlari.txt"
+   ],
+   "att_paths": [
+    "att/Kalibrasyon_Notlari.txt"
+   ],
+   "body": "Merhaba,\n\nDosya ektedir. Bilginize.\n\nİyi çalışmalar.",
+   "lang": "tr"
+  },
+  {
+   "id": "A12",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-04-07T09:00:00",
+   "subject": "Liste",
+   "from_name": "Ayla Tunç",
+   "from_addr": "ayla@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-04-07T09:00:00",
+   "attachments": [
+    "Ambalaj_Fiyatlari.csv"
+   ],
+   "att_paths": [
+    "att/Ambalaj_Fiyatlari.csv"
+   ],
+   "body": "Merhaba,\n\nDosya ektedir. Bilginize.\n\nİyi çalışmalar.",
+   "lang": "tr"
+  },
+  {
+   "id": "A13",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-03-18T16:30:00",
+   "subject": "Arşiv",
+   "from_name": "Okan Er",
+   "from_addr": "okan@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-03-18T16:30:00",
+   "attachments": [
+    "Bakim_Arsivi.zip"
+   ],
+   "att_paths": [
+    "att/Bakim_Arsivi.zip"
+   ],
+   "body": "Merhaba,\n\nDosya ektedir. Bilginize.\n\nİyi çalışmalar.",
+   "lang": "tr"
+  },
+  {
+   "id": "A14",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-10-28T08:00:00",
+   "subject": "Bülten",
+   "from_name": "İnsan Kaynakları",
+   "from_addr": "i̇nsan@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-10-28T08:00:00",
+   "attachments": [
+    "Ic_Bulten.html"
+   ],
+   "att_paths": [
+    "att/Ic_Bulten.html"
+   ],
+   "body": "Merhaba,\n\nBülten ektedir.",
+   "lang": "tr"
+  },
+  {
+   "id": "A20",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-10-09T09:00:00",
+   "subject": "Toplantı saati",
+   "from_name": "Deniz Aydın",
+   "from_addr": "deniz@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-10-09T09:00:00",
+   "attachments": [],
+   "att_paths": [],
+   "body": "Yarınki toplantı 14.00'e alındı.",
+   "lang": "tr"
+  },
+  {
+   "id": "A21",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-09-11T10:00:00",
+   "subject": "Rampa bakımı",
+   "from_name": "Okan Er",
+   "from_addr": "okan@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-09-11T10:00:00",
+   "attachments": [],
+   "att_paths": [],
+   "body": "Üç numaralı rampanın bakımı cuma günü yapılacak.",
+   "lang": "tr"
+  },
+  {
+   "id": "A22",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-10-30T07:30:00",
+   "subject": "Servis",
+   "from_name": "İnsan Kaynakları",
+   "from_addr": "i̇nsan@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-10-30T07:30:00",
+   "attachments": [],
+   "att_paths": [],
+   "body": "Servis aracı pazartesi sabah gecikebilir.",
+   "lang": "tr"
+  },
+  {
+   "id": "A23",
+   "folder": "F-INBOX",
+   "cls": "IPM.Note",
+   "mod": "2026-04-01T11:00:00",
+   "subject": "Fiyat teklifi",
+   "from_name": "Ayla Tunç",
+   "from_addr": "ayla@ornek.com.tr",
+   "to": [
+    [
+     "Furkan Çakır",
+     "furkan@ornek.com.tr"
+    ]
+   ],
+   "cc": [],
+   "date": "2026-04-01T11:00:00",
+   "attachments": [],
+   "att_paths": [],
+   "body": "Koli fiyatlarında yüzde 5 artış olacak.",
+   "lang": "tr"
+  }
+ ]
+}

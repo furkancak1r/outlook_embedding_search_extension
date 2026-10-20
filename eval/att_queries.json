@@ -1,0 +1,126 @@
+[
+ {
+  "id": "K01",
+  "q": "galvanizli raf dikmesi kaç adet sayılmıştı",
+  "targets": [
+   "A01"
+  ],
+  "category": "ek-tablo",
+  "lang": "tr"
+ },
+ {
+  "id": "K02",
+  "q": "plastik kasa ve euro palet sayımı",
+  "targets": [
+   "A02"
+  ],
+  "category": "ek-tablo",
+  "lang": "tr"
+ },
+ {
+  "id": "K03",
+  "q": "depo alanı 2400 metrekare olan kira sözleşmesi",
+  "targets": [
+   "A03"
+  ],
+  "category": "ek-belge",
+  "lang": "tr"
+ },
+ {
+  "id": "K04",
+  "q": "iade oranının yüzde 2,7 olduğu sunum",
+  "targets": [
+   "A05"
+  ],
+  "category": "ek-belge",
+  "lang": "tr"
+ },
+ {
+  "id": "K05",
+  "q": "soğuk zincir taşıma faturası",
+  "targets": [
+   "A06"
+  ],
+  "category": "ek-pdf",
+  "lang": "tr"
+ },
+ {
+  "id": "K06",
+  "q": "kuru yük taşıma faturası 9.300 TL",
+  "targets": [
+   "A07"
+  ],
+  "category": "ek-pdf",
+  "lang": "tr"
+ },
+ {
+  "id": "K07",
+  "q": "yangın tüpü kontrol raporu",
+  "targets": [
+   "A08"
+  ],
+  "category": "ek-ocr",
+  "lang": "tr"
+ },
+ {
+  "id": "K08",
+  "q": "konteyner mühür numarası 558213",
+  "targets": [
+   "A09"
+  ],
+  "category": "ek-ocr",
+  "lang": "tr"
+ },
+ {
+  "id": "K09",
+  "q": "E-4012 hata kodu stok rezervasyonu",
+  "targets": [
+   "A10"
+  ],
+  "category": "ek-ocr",
+  "lang": "tr"
+ },
+ {
+  "id": "K10",
+  "q": "KX-2291 seri numaralı kalibrasyon cihazı",
+  "targets": [
+   "A11"
+  ],
+  "category": "ek-metin",
+  "lang": "tr"
+ },
+ {
+  "id": "K11",
+  "q": "balonlu naylon fiyatı",
+  "targets": [
+   "A12"
+  ],
+  "category": "ek-metin",
+  "lang": "tr"
+ },
+ {
+  "id": "K12",
+  "q": "nem ölçer sensörü arızası",
+  "targets": [
+   "A13"
+  ],
+  "category": "ek-arsiv",
+  "lang": "tr"
+ },
+ {
+  "id": "K13",
+  "q": "gece vardiyası saat 23 bülteni",
+  "targets": [
+   "A14"
+  ],
+  "category": "ek-metin",
+  "lang": "tr"
+ },
+ {
+  "id": "K14",
+  "q": "uzay mekiği fırlatma rampası",
+  "targets": [],
+  "category": "negatif",
+  "lang": "tr"
+ }
+]

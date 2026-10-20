@@ -1,0 +1,8 @@
+{
+ "threads": 4,
+ "memory_limit_mb": 4096,
+ "search_index_budget_s": 20,
+ "idle_timeout_s": 300,
+ "session_timeout_s": 7200,
+ "attachments": true
+}

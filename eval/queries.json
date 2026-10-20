@@ -1,0 +1,853 @@
+[
+ {
+  "id": "Q001",
+  "q": "geçen ay Ahmet'ten gelen kargo faturası",
+  "lang": "tr",
+  "category": "date",
+  "targets": [
+   "M0289"
+  ],
+  "family": "kargo"
+ },
+ {
+  "id": "Q002",
+  "q": "hızlı lojistk kargo faturası eylül",
+  "lang": "tr",
+  "category": "typo",
+  "targets": [
+   "M0289"
+  ],
+  "family": "kargo"
+ },
+ {
+  "id": "Q003",
+  "q": "forkliftin hidrolik arızası için gelen fiyat",
+  "lang": "tr",
+  "category": "partial",
+  "targets": [
+   "M0253"
+  ],
+  "family": "forklift"
+ },
+ {
+  "id": "Q004",
+  "q": "forklift hydraulic pump repair quote",
+  "lang": "en",
+  "category": "crosslingual",
+  "targets": [
+   "M0253"
+  ],
+  "family": "forklift"
+ },
+ {
+  "id": "Q005",
+  "q": "Ayşe'ye gönderdiğim temmuz izin talebi",
+  "lang": "tr",
+  "category": "people",
+  "targets": [
+   "M0250"
+  ],
+  "family": "izin"
+ },
+ {
+  "id": "Q006",
+  "q": "yillik izin talebi burak koc bakacak",
+  "lang": "tr",
+  "category": "ascii",
+  "targets": [
+   "M0250"
+  ],
+  "family": "izin"
+ },
+ {
+  "id": "Q007",
+  "q": "geçen hafta gelen ERP bakım duyurusu",
+  "lang": "tr",
+  "category": "date",
+  "targets": [
+   "M0314"
+  ],
+  "family": "sunucu"
+ },
+ {
+  "id": "Q008",
+  "q": "sunucu bakımı erp sistemne erişim",
+  "lang": "tr",
+  "category": "typo",
+  "targets": [
+   "M0314",
+   "M0117"
+  ],
+  "family": "sunucu"
+ },
+ {
+  "id": "Q009",
+  "q": "mart başında gelen raf teklifi",
+  "lang": "tr",
+  "category": "date",
+  "targets": [
+   "M0182"
+  ],
+  "family": "raf"
+ },
+ {
+  "id": "Q010",
+  "q": "Gökhan'ın gönderdiği raf sistemi teklifi",
+  "lang": "tr",
+  "category": "people",
+  "targets": [
+   "M0182"
+  ],
+  "family": "raf"
+ },
+ {
+  "id": "Q011",
+  "q": "toplantıda pilot için hangi depo seçilmişti",
+  "lang": "tr",
+  "category": "partial",
+  "targets": [
+   "M0300"
+  ],
+  "family": "toplanti"
+ },
+ {
+  "id": "Q012",
+  "q": "Pilot uygulama için Gebze deposu seçildi",
+  "lang": "tr",
+  "category": "exact",
+  "targets": [
+   "M0300"
+  ],
+  "family": "toplanti"
+ },
+ {
+  "id": "Q013",
+  "q": "yazın Ankara'daki otel rezervasyonu",
+  "lang": "tr",
+  "category": "date",
+  "targets": [
+   "M0232",
+   "M0233"
+  ],
+  "family": "otel"
+ },
+ {
+  "id": "Q014",
+  "q": "Ayşe bir otel rezervasyonu iletmişti galiba",
+  "lang": "tr",
+  "category": "partial",
+  "targets": [
+   "M0233"
+  ],
+  "family": "otel"
+ },
+ {
+  "id": "Q015",
+  "q": "bütçe excel dosyası olan mail, Q3",
+  "lang": "tr",
+  "category": "attachment",
+  "targets": [
+   "M0240"
+  ],
+  "family": "butce"
+ },
+ {
+  "id": "Q016",
+  "q": "birkaç ay önce gelen bütçe taslağı",
+  "lang": "tr",
+  "category": "date",
+  "targets": [
+   "M0240"
+  ],
+  "family": "butce"
+ },
+ {
+  "id": "Q017",
+  "q": "geçen yıl kasımda gelen sözleşme taslağı",
+  "lang": "tr",
+  "category": "date",
+  "targets": [
+   "M0126"
+  ],
+  "family": "sozlesme"
+ },
+ {
+  "id": "Q018",
+  "q": "sozlesme taslagi fesih bildirim suresi",
+  "lang": "tr",
+  "category": "ascii",
+  "targets": [
+   "M0126"
+  ],
+  "family": "sozlesme"
+ },
+ {
+  "id": "Q019",
+  "q": "VPN password reset request",
+  "lang": "en",
+  "category": "crosslingual",
+  "targets": [
+   "M0273"
+  ],
+  "family": "sifre"
+ },
+ {
+  "id": "Q020",
+  "q": "vpn şifre sıfırlma",
+  "lang": "tr",
+  "category": "typo",
+  "targets": [
+   "M0273"
+  ],
+  "family": "sifre"
+ },
+ {
+  "id": "Q021",
+  "q": "müşteri kırık seramik koli şikayeti göndermişti",
+  "lang": "tr",
+  "category": "partial",
+  "targets": [
+   "M0280"
+  ],
+  "family": "sikayet"
+ },
+ {
+  "id": "Q022",
+  "q": "customer complaint about damaged ceramic tiles",
+  "lang": "en",
+  "category": "crosslingual",
+  "targets": [
+   "M0280"
+  ],
+  "family": "sikayet"
+ },
+ {
+  "id": "Q023",
+  "q": "yol yardımı arttı diye bir İK duyurusu vardı",
+  "lang": "tr",
+  "category": "partial",
+  "targets": [
+   "M0281"
+  ],
+  "family": "bordro"
+ },
+ {
+  "id": "Q024",
+  "q": "forklift operatoru guvenlik egitimi gebze",
+  "lang": "tr",
+  "category": "ascii",
+  "targets": [
+   "M0208"
+  ],
+  "family": "egitim"
+ },
+ {
+  "id": "Q025",
+  "q": "office move plan which floor do we get",
+  "lang": "en",
+  "category": "crosslingual",
+  "targets": [
+   "M0156"
+  ],
+  "family": "tasima"
+ },
+ {
+  "id": "Q026",
+  "q": "Burcu'nun gönderdiği 25 kullanıcılık Acrobat lisans yenileme",
+  "lang": "tr",
+  "category": "people",
+  "targets": [
+   "M0270"
+  ],
+  "family": "lisans"
+ },
+ {
+  "id": "Q027",
+  "q": "2026 ISO denetim planı pdf",
+  "lang": "tr",
+  "category": "attachment",
+  "targets": [
+   "M0213"
+  ],
+  "family": "denetim"
+ },
+ {
+  "id": "Q028",
+  "q": "mail from Sarah about the delayed barcode scanner shipment",
+  "lang": "en",
+  "category": "people",
+  "targets": [
+   "M0304"
+  ],
+  "family": "shipment"
+ },
+ {
+  "id": "Q029",
+  "q": "Rotterdam limanında geciken barkod okuyucu sevkiyatı",
+  "lang": "tr",
+  "category": "crosslingual",
+  "targets": [
+   "M0304"
+  ],
+  "family": "shipment"
+ },
+ {
+  "id": "Q030",
+  "q": "shipmnet delay rotterdam",
+  "lang": "en",
+  "category": "typo",
+  "targets": [
+   "M0304"
+  ],
+  "family": "shipment"
+ },
+ {
+  "id": "Q031",
+  "q": "gümrükte bekleyen paletler, EUR.1 belgesi eksikti",
+  "lang": "en",
+  "category": "partial",
+  "targets": [
+   "M0277"
+  ],
+  "family": "shipment"
+ },
+ {
+  "id": "Q032",
+  "q": "Northwind'in 12.450 euroluk ödenmemiş fatura hatırlatması",
+  "lang": "tr",
+  "category": "crosslingual",
+  "targets": [
+   "M0221"
+  ],
+  "family": "overdue"
+ },
+ {
+  "id": "Q033",
+  "q": "overdue invoice INV-88213",
+  "lang": "en",
+  "category": "exact",
+  "targets": [
+   "M0221"
+  ],
+  "family": "overdue"
+ },
+ {
+  "id": "Q034",
+  "q": "licence renewal before new year",
+  "lang": "en",
+  "category": "date",
+  "targets": [
+   "M0139"
+  ],
+  "family": "renewal"
+ },
+ {
+  "id": "Q035",
+  "q": "BluePeak renewal quote pdf for 50 users",
+  "lang": "en",
+  "category": "attachment",
+  "targets": [
+   "M0139"
+  ],
+  "family": "renewal"
+ },
+ {
+  "id": "Q036",
+  "q": "bu yıl gelen İstanbul Milano tır navlun fiyatı",
+  "lang": "tr",
+  "category": "crosslingual",
+  "targets": [
+   "M0173"
+  ],
+  "family": "freight"
+ },
+ {
+  "id": "Q037",
+  "q": "Berlin otel rezervasyon onayı, superior oda",
+  "lang": "tr",
+  "category": "crosslingual",
+  "targets": [
+   "M0176"
+  ],
+  "family": "hotelen"
+ },
+ {
+  "id": "Q038",
+  "q": "booking confirmation last march Berlin",
+  "lang": "en",
+  "category": "date",
+  "targets": [
+   "M0176"
+  ],
+  "family": "hotelen"
+ },
+ {
+  "id": "Q039",
+  "q": "something about two factor login becoming required for admins",
+  "lang": "en",
+  "category": "partial",
+  "targets": [
+   "M0260"
+  ],
+  "family": "security"
+ },
+ {
+  "id": "Q040",
+  "q": "lojistik için ileri excel kurs kaydı haziran",
+  "lang": "tr",
+  "category": "crosslingual",
+  "targets": [
+   "M0217"
+  ],
+  "family": "trainingen"
+ },
+ {
+  "id": "Q041",
+  "q": "the auditor said stock count differences were not checked",
+  "lang": "en",
+  "category": "partial",
+  "targets": [
+   "M0267"
+  ],
+  "family": "auditen"
+ },
+ {
+  "id": "Q042",
+  "q": "audit finidngs inventory counting",
+  "lang": "en",
+  "category": "typo",
+  "targets": [
+   "M0267",
+   "M0094"
+  ],
+  "family": "auditen"
+ },
+ {
+  "id": "Q043",
+  "q": "Atlas SmartLocker launch",
+  "lang": "en",
+  "category": "exact",
+  "targets": [
+   "M0274",
+   "M0291"
+  ],
+  "family": "launch"
+ },
+ {
+  "id": "Q044",
+  "q": "akıllı dolap ürün lansmanı ertelendi mi",
+  "lang": "tr",
+  "category": "crosslingual",
+  "targets": [
+   "M0291"
+  ],
+  "family": "launch"
+ },
+ {
+  "id": "Q045",
+  "q": "geçen ay depo vardiya amiri mülakat daveti",
+  "lang": "tr",
+  "category": "date",
+  "targets": [
+   "M0297"
+  ],
+  "family": "ise_alim"
+ },
+ {
+  "id": "Q046",
+  "q": "dün gelen araç bakım randevusu",
+  "lang": "tr",
+  "category": "date",
+  "targets": [
+   "M0316"
+  ],
+  "family": "arac"
+ },
+ {
+  "id": "Q047",
+  "q": "Mehmet'e gönderdiğim Ankara fuarı avans kapama",
+  "lang": "tr",
+  "category": "people",
+  "targets": [
+   "M0245"
+  ],
+  "family": "avans"
+ },
+ {
+  "id": "Q048",
+  "q": "streç film numunesinin kargo takip numarası",
+  "lang": "tr",
+  "category": "partial",
+  "targets": [
+   "M0301"
+  ],
+  "family": "numune"
+ },
+ {
+  "id": "Q049",
+  "q": "kantar kalibrasyon sertifikası 2026",
+  "lang": "tr",
+  "category": "attachment",
+  "targets": [
+   "M0157"
+  ],
+  "family": "kalibrasyon"
+ },
+ {
+  "id": "Q050",
+  "q": "why was the Izmir go-live postponed",
+  "lang": "en",
+  "category": "partial",
+  "targets": [
+   "M0288"
+  ],
+  "family": "statusen"
+ },
+ {
+  "id": "Q051",
+  "q": "kalite komitesi yanlis etiketleme cift kontrol",
+  "lang": "tr",
+  "category": "ascii",
+  "targets": [
+   "M0249"
+  ],
+  "family": "kalite"
+ },
+ {
+  "id": "Q052",
+  "q": "Yıllık izin talebi 20–31 Temmuz",
+  "lang": "tr",
+  "category": "exact",
+  "targets": [
+   "M0250"
+  ],
+  "family": "izin"
+ },
+ {
+  "id": "Q053",
+  "q": "Hasarlı teslimat SP-20931",
+  "lang": "tr",
+  "category": "exact",
+  "targets": [
+   "M0280"
+  ],
+  "family": "sikayet"
+ },
+ {
+  "id": "Q054",
+  "q": "Course registration Advanced Excel for Logistics June",
+  "lang": "en",
+  "category": "exact",
+  "targets": [
+   "M0217"
+  ],
+  "family": "trainingen"
+ },
+ {
+  "id": "Q055",
+  "q": "Grand Ankara Otel rezervasyon onayı GA-55821",
+  "lang": "tr",
+  "category": "exact",
+  "targets": [
+   "M0232",
+   "M0233"
+  ],
+  "family": "otel"
+ },
+ {
+  "id": "Q056",
+  "q": "Freight rate offer Istanbul – Milan 2,850",
+  "lang": "tr",
+  "category": "exact",
+  "targets": [
+   "M0173"
+  ],
+  "family": "freight"
+ },
+ {
+  "id": "Q057",
+  "q": "vpn sifre sifirlama talebi",
+  "lang": "tr",
+  "category": "ascii",
+  "targets": [
+   "M0273"
+  ],
+  "family": "sifre"
+ },
+ {
+  "id": "Q058",
+  "q": "hasarli teslimat seramik koli",
+  "lang": "tr",
+  "category": "ascii",
+  "targets": [
+   "M0280"
+  ],
+  "family": "sikayet"
+ },
+ {
+  "id": "Q059",
+  "q": "ofis tasinma plani 5. kat maslak",
+  "lang": "tr",
+  "category": "ascii",
+  "targets": [
+   "M0156"
+  ],
+  "family": "tasima"
+ },
+ {
+  "id": "Q060",
+  "q": "egitim forklift guvenlik sertifika nisan",
+  "lang": "tr",
+  "category": "ascii",
+  "targets": [
+   "M0208"
+  ],
+  "family": "egitim"
+ },
+ {
+  "id": "Q061",
+  "q": "bütçe taslğı Q3 lojistik",
+  "lang": "tr",
+  "category": "typo",
+  "targets": [
+   "M0240"
+  ],
+  "family": "butce"
+ },
+ {
+  "id": "Q062",
+  "q": "rezervasyn onayı grand ankara haziran",
+  "lang": "tr",
+  "category": "typo",
+  "targets": [
+   "M0232",
+   "M0233"
+  ],
+  "family": "otel"
+ },
+ {
+  "id": "Q063",
+  "q": "yol yardimi bordrro ağustos",
+  "lang": "tr",
+  "category": "typo",
+  "targets": [
+   "M0281"
+  ],
+  "family": "bordro"
+ },
+ {
+  "id": "Q064",
+  "q": "lisans yenilme acrobat 25 kullanıcı",
+  "lang": "tr",
+  "category": "typo",
+  "targets": [
+   "M0270"
+  ],
+  "family": "lisans"
+ },
+ {
+  "id": "Q065",
+  "q": "geçen ay gelen MFA zorunluluğu duyurusu",
+  "lang": "tr",
+  "category": "partial",
+  "targets": [
+   "M0260"
+  ],
+  "family": "security"
+ },
+ {
+  "id": "Q066",
+  "q": "2 hafta önce gelen tarayıcı sevkiyatı gecikmesi",
+  "lang": "tr",
+  "category": "date",
+  "targets": [
+   "M0304"
+  ],
+  "family": "shipment"
+ },
+ {
+  "id": "Q067",
+  "q": "araç bakımı 60 bin km",
+  "lang": "tr",
+  "category": "partial",
+  "targets": [
+   "M0316"
+  ],
+  "family": "arac"
+ },
+ {
+  "id": "Q068",
+  "q": "numune kargo takip numarası Gökhan",
+  "lang": "tr",
+  "category": "partial",
+  "targets": [
+   "M0301"
+  ],
+  "family": "numune"
+ },
+ {
+  "id": "Q069",
+  "q": "denetçi stok sayım farkı demişti",
+  "lang": "tr",
+  "category": "partial",
+  "targets": [
+   "M0267"
+  ],
+  "family": "auditen"
+ },
+ {
+  "id": "Q070",
+  "q": "Murat'tan gelen forklift teklifi Toyota hidrolik",
+  "lang": "en",
+  "category": "people",
+  "targets": [
+   "M0253"
+  ],
+  "family": "forklift"
+ },
+ {
+  "id": "Q071",
+  "q": "John's payment reminder for invoice 88213",
+  "lang": "en",
+  "category": "people",
+  "targets": [
+   "M0221"
+  ],
+  "family": "overdue"
+ },
+ {
+  "id": "Q072",
+  "q": "Laura'nın şubatta gönderdiği Milano navlun fiyatı",
+  "lang": "tr",
+  "category": "people",
+  "targets": [
+   "M0173"
+  ],
+  "family": "freight"
+ },
+ {
+  "id": "Q073",
+  "q": "Emma'nın gönderdiği İzmir canlıya geçiş ertelemesi",
+  "lang": "tr",
+  "category": "people",
+  "targets": [
+   "M0288"
+  ],
+  "family": "statusen"
+ },
+ {
+  "id": "Q074",
+  "q": "Can'dan gelen VPN şifre maili",
+  "lang": "tr",
+  "category": "people",
+  "targets": [
+   "M0273"
+  ],
+  "family": "sifre"
+ },
+ {
+  "id": "Q075",
+  "q": "Fatura_2026-09 pdf Hızlı Lojistik",
+  "lang": "tr",
+  "category": "attachment",
+  "targets": [
+   "M0289"
+  ],
+  "family": "kargo"
+ },
+ {
+  "id": "Q076",
+  "q": "Sözleşme_Taslak_v3 docx",
+  "lang": "tr",
+  "category": "attachment",
+  "targets": [
+   "M0126"
+  ],
+  "family": "sozlesme"
+ },
+ {
+  "id": "Q077",
+  "q": "avans kapama formu ANK pdf",
+  "lang": "en",
+  "category": "attachment",
+  "targets": [
+   "M0245"
+  ],
+  "family": "avans"
+ },
+ {
+  "id": "Q078",
+  "q": "Agenda AEL pdf course",
+  "lang": "en",
+  "category": "attachment",
+  "targets": [
+   "M0217",
+   "M0116"
+  ],
+  "family": "trainingen"
+ },
+ {
+  "id": "Q079",
+  "q": "uzay mekiği fırlatma takvimi",
+  "lang": "tr",
+  "category": "negative",
+  "targets": [],
+  "family": ""
+ },
+ {
+  "id": "Q080",
+  "q": "düğün davetiyesi ve nişan fotoğrafları",
+  "lang": "tr",
+  "category": "negative",
+  "targets": [],
+  "family": ""
+ },
+ {
+  "id": "Q081",
+  "q": "kripto para cüzdanı şifresi",
+  "lang": "tr",
+  "category": "negative",
+  "targets": [],
+  "family": ""
+ },
+ {
+  "id": "Q082",
+  "q": "the quarterly dividend payout to shareholders",
+  "lang": "en",
+  "category": "negative",
+  "targets": [],
+  "family": ""
+ },
+ {
+  "id": "Q083",
+  "q": "veteriner aşı randevusu kedi",
+  "lang": "tr",
+  "category": "negative",
+  "targets": [],
+  "family": ""
+ },
+ {
+  "id": "Q084",
+  "q": "swimming pool membership renewal",
+  "lang": "en",
+  "category": "negative",
+  "targets": [],
+  "family": ""
+ },
+ {
+  "id": "Q085",
+  "q": "forklift lastiği satın alma ihalesi Antalya",
+  "lang": "tr",
+  "category": "negative",
+  "targets": [],
+  "family": ""
+ },
+ {
+  "id": "Q086",
+  "q": "otel havuzu bakım ihalesi",
+  "lang": "tr",
+  "category": "negative",
+  "targets": [],
+  "family": ""
+ }
+]

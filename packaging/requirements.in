@@ -1,0 +1,21 @@
+# Direct runtime pins for the HatirMail worker (Python 3.13, CPU only).
+# packaging/make_locks.py resolves the dependencies (binary wheels only) and writes requirements-*.lock with the
+# sha256 of every wheel. Markers: make_locks.py reads "win32" as "Windows lock only" (pip download on the Mac cannot
+# evaluate markers for another platform).
+onnxruntime==1.31.0      # runs the exported model (models/onnx, eval/export_onnx.py); telemetry off in hm_embed.session
+tokenizers==0.23.3
+numpy==2.5.4
+pypdfium2==5.14.0        # attachments: pdf
+xlrd==2.0.2              # attachments: xls
+olefile==0.47            # attachments: msg
+colorama==0.4.6; sys_platform == "win32"  # click/tqdm need it on Windows (a marker that pip download on the Mac skips)
+# Windows only (OCR, Windows.Media.Ocr):
+winrt-runtime==3.2.1; sys_platform == "win32"
+winrt-windows-foundation==3.2.1; sys_platform == "win32"
+winrt-windows-foundation-collections==3.2.1; sys_platform == "win32"
+winrt-windows-globalization==3.2.1; sys_platform == "win32"
+winrt-windows-graphics-imaging==3.2.1; sys_platform == "win32"
+winrt-windows-media-ocr==3.2.1; sys_platform == "win32"
+winrt-windows-storage-streams==3.2.1; sys_platform == "win32"
+# Not at run time (dev only, eval/export_onnx.py + eval/parity_onnx.py, .venv-onnx): torch==2.14.1,
+# transformers==5.19.0, safetensors==0.8.0, onnx==1.23.2, onnxscript==0.7.2.

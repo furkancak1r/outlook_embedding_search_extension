@@ -1,0 +1,24 @@
+/models/
+/.venv*/
+/build/
+/dist/
+/data/
+/tmp/
+__pycache__/
+*.pyc
+*.part
+.DS_Store
+
+# Private: test logs, server scripts and the work plan hold machine, user and mailbox details. Keep them local only.
+/reports/
+/ops/
+/IMPLEMENTATION_PLAN.md
+
+# Mail data, indexes and secrets: never commit.
+*.pst
+*.ost
+*.sqlite
+*.sqlite-*
+*.db
+.env
+.env.*
