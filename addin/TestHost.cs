@@ -11,8 +11,11 @@
 //                               each one without a model load (keep-alive must be on)
 //          --keep-alive-ms N    before the last search: keep-alive N ms; after it the worker must close by itself
 //          --keep-alive-min N   keep-alive setting for this run (0 = old behavior: the worker exits after each session)
+//          --open-att SHA256    press "Eki aç" on the first result: the opened copy must have this SHA-256 (a zip member:
+//                               the member bytes), the Mark of the Web (Windows) and be gone after the window close
 //        HatirMail.TestHost.exe <corpus.json> <hatirmail_home> --layout-check [screenshot_dir]
 //        HatirMail.TestHost.exe - <hatirmail_home> --history-check   (recent/saved searches file only, no window: runs on mono)
+//        HatirMail.TestHost.exe <att_corpus.json> <hatirmail_home> --attach-check   ("Eki aç" file rules, no window: runs on mono)
 // Exit code 0 = pass. Prints only event names, counts, ids and timings (no mail text).
 using System;
 using System.Collections;
@@ -21,8 +24,10 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Forms;
 
@@ -44,15 +49,19 @@ namespace HatirMail
             Environment.SetEnvironmentVariable("HATIRMAIL_HOME", args[1]);
             var settings = Settings.Load();
             if (args[2] == "--history-check") return HistoryCheck(settings) ? 0 : 1;
+            if (args[2] == "--attach-check") return AttachCheck(args[0], settings) ? 0 : 1;
             if (args[2] == "--layout-check") return LayoutCheck(new JsonSource(args[0]), settings, args.Length > 3 ? args[3] : null);
             string expected = args.Length > 3 && !args[3].StartsWith("--") ? args[3] : null;
             bool index = args.Contains("--index"), expectKeyword = args.Contains("--expect-keyword"), expectIncomplete = args.Contains("--expect-incomplete");
             int stopAfter = Opt(args, "--stop-after-ms", -1), budget = Opt(args, "--budget", -1), maxMs = Opt(args, "--max-ms", -1);
             int warmRuns = Opt(args, "--warm", 0), keepMs = Opt(args, "--keep-alive-ms", 0), keepMin = Opt(args, "--keep-alive-min", -1);
+            string openAtt = Array.IndexOf(args, "--open-att") > 0 ? args[Array.IndexOf(args, "--open-att") + 1] : null;
             if (budget >= 0) settings.SearchIndexBudgetS = budget;
             if (keepMin >= 0) settings.KeepAliveMin = keepMin;
             var src = new JsonSource(args[0]);
             var form = new SearchForm(new SlowSource(src, Opt(args, "--read-delay-ms", 0)), settings) { ShowInTaskbar = false, WindowState = FormWindowState.Minimized };
+            var launched = new List<string>();
+            form.Launch = p => launched.Add(p); // no program starts in the test: record the path
             int code = 1, searches = 0;
             var pids = new List<int>();
             var sw = Stopwatch.StartNew();
@@ -129,9 +138,33 @@ namespace HatirMail
                 }
                 bool complete = form.IndexComplete; // before Report closes the window
                 long ms = sw.ElapsedMilliseconds;
+                string opened = null;
+                if (openAtt != null && reason == "ok" && form.ResultCount > 0)
+                {
+                    form.SelectResult(0);
+                    form.ClickOpenAttachment();
+                    opened = launched.LastOrDefault();
+                    bool same = opened != null && File.Exists(opened) && Sha256(opened) == openAtt.ToLowerInvariant();
+                    bool inRoot = opened != null && Path.GetFullPath(opened).StartsWith(Path.GetFullPath(AttachmentCopy.Root(settings.Data)) + Path.DirectorySeparatorChar);
+                    bool ro = opened != null && File.Exists(opened) && (File.GetAttributes(opened) & FileAttributes.ReadOnly) != 0;
+                    string zone = opened != null ? ZoneOf(opened) : null;
+                    bool motw = Environment.OSVersion.Platform != PlatformID.Win32NT || zone != null && zone.Contains("ZoneId=3");
+                    bool ok = same && inRoot && ro && motw && form.StatusText.StartsWith("Ek açıldı");
+                    Console.WriteLine("open_att line={0} file={1} sha_ok={2} in_open_att={3} read_only={4} motw={5} -> {6}", form.AttachLine != null,
+                                      opened != null ? Path.GetFileName(opened) : "-", same, inRoot, ro, motw, ok ? "ok" : "FAIL");
+                    if (!ok) openAtt = "FAIL";
+                }
+                else if (openAtt != null) { Console.WriteLine("open_att no result -> FAIL"); openAtt = "FAIL"; }
                 Report(form, src, settings, pids, reason, mode, stopAfter, expected, expectKeyword, expectIncomplete, ref code);
                 if (expectIncomplete && complete) { Console.WriteLine("FAIL: index complete after a time-limited search"); code = 1; }
                 if (maxMs >= 0 && ms > maxMs) { Console.WriteLine("FAIL: search took " + ms + " ms, limit " + maxMs); code = 1; }
+                if (openAtt != null)
+                {
+                    // Report closed the window: the copy is gone.
+                    bool gone = opened != null && !File.Exists(opened) && !Directory.Exists(AttachmentCopy.Root(settings.Data));
+                    Console.WriteLine("open_att_cleaned=" + (gone ? "ok" : "FAIL"));
+                    if (openAtt == "FAIL" || !gone) { Console.WriteLine("FAIL: Eki aç"); code = 1; }
+                }
             };
             finish = () =>
             {
@@ -212,6 +245,7 @@ namespace HatirMail
                 return s.Read(eid, storeId, folderId);
             }
             public bool SaveAttachment(string eid, string storeId, int idx, string path) { return s.SaveAttachment(eid, storeId, idx, path); }
+            public string AttachmentName(string eid, string storeId, int idx, out bool item) { return s.AttachmentName(eid, storeId, idx, out item); }
             public void Open(string eid, string storeId) { s.Open(eid, storeId); }
         }
 
@@ -257,6 +291,17 @@ namespace HatirMail
                 form.ShowTab(2);
                 ok &= SettingsRoundTrip(form, settings);
                 form.ShowTab(0);
+                // "Eki aç" bar: only for a match inside an attachment; the button needs the attachment index.
+                string l1 = form.AttachLine; bool b1 = form.AttachButtonEnabled;
+                form.SelectResult(1); Application.DoEvents();
+                string l2 = form.AttachLine;
+                form.SelectResult(2); Application.DoEvents();
+                string l3 = form.AttachLine; bool b3 = form.AttachButtonEnabled;
+                form.SelectResult(0); Application.DoEvents();
+                bool bar = l1 != null && l1.StartsWith("Ekte bulundu: Kargo_Faturalari_2026.zip › Eylül/") && b1 && l2 == null &&
+                           l3 == "Ekte bulundu: Sayim_Eylul.xlsx" && !b3 && form.AttachLine == l1;
+                Console.WriteLine("attach_bar zip_member={0} body_hidden={1} old_result_button_off={2} -> {3}", l1 != null && b1, l2 == null, l3 != null && !b3, bar ? "ok" : "FAIL");
+                ok &= bar;
                 Console.WriteLine("client_sizes default={0} min={1} root={2}", form.DesignClientSize, form.MinClientSize, root.Size);
                 Console.WriteLine("preview_marked_chars=" + form.PreviewMarkedChars);
                 ok &= form.PreviewMarkedChars > 0;
@@ -360,6 +405,118 @@ namespace HatirMail
             finally { if (Directory.Exists(dir)) Directory.Delete(dir, true); } // only the folder made above
             Console.WriteLine(ok ? "PASS" : "FAIL");
             return ok;
+        }
+
+        // "Eki aç" file rules (no window: runs on mono on the Mac too): safe file names, the zip member extraction with the
+        // name rules of Python's zipfile (the worker names the member), the 20 MB member cap, read-only copy and cleanup.
+        // Works in a new folder under the test home and deletes it at the end. Prints flags and file names only.
+        static bool AttachCheck(string corpus, Settings settings)
+        {
+            string dir = Path.Combine(settings.Home, "attach-check-" + Guid.NewGuid().ToString("N"));
+            string fixture = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(corpus)), "att", "Bakim_Arsivi.zip");
+            bool ok = true;
+            Action<string, bool> check = (name, pass) => { Console.WriteLine("attach_" + name + "=" + (pass ? "ok" : "FAIL")); ok &= pass; };
+            Func<string, string> copy = sub => { string d = Path.Combine(dir, sub); Directory.CreateDirectory(d); string p = Path.Combine(d, "Bakim_Arsivi.zip"); File.Copy(fixture, p); return p; };
+            try
+            {
+                Func<string, string> safe = AttachmentCopy.SafeFileName;
+                string longName = new string('a', 200) + ".pdf";
+                check("safe_name", safe("a/b\\c:d*?.txt") == "a_b_c_d__.txt" && safe("CON.txt") == "_CON.txt" && safe("lpt1") == "_lpt1" &&
+                                   safe("  ... ") == "ek" && safe(null) == "ek" && safe("rapor. ") == "rapor" && safe("Fatura Ekim.pdf") == "Fatura Ekim.pdf" &&
+                                   safe(longName).Length == 120 && safe(longName).EndsWith(".pdf") &&
+                                   safe(new string('x', 150) + "." + new string('b', 30)) == new string('x', 120)); // a long "extension" is cut too
+                var src = new JsonSource(corpus);
+                bool item;
+                check("source_name", src.AttachmentName("A13", "", 1, out item) == "Bakim_Arsivi.zip" && !item && src.AttachmentName("A13", "", 2, out item) == null);
+                // The member of the eval fixture: the bytes of the docx inside the zip; the zip copy is deleted.
+                string zip = copy("a");
+                string m = AttachmentCopy.ExtractMember(zip, "Bakim/bakim_notu.docx");
+                check("member", m != null && Path.GetFileName(m) == "bakim_notu.docx" && Path.GetDirectoryName(m) == Path.GetDirectoryName(zip) &&
+                                Sha256(m) == "0136fc85186c56d6352db34b79f830630b09fcf086d9150c0883491002ce610d" && !File.Exists(zip));
+                zip = copy("b");
+                check("member_missing", AttachmentCopy.ExtractMember(zip, "Bakim/yok.txt") == null && AttachmentCopy.ExtractMember(zip, "Bakim/") == null &&
+                                        File.Exists(zip) && Directory.GetFiles(Path.GetDirectoryName(zip)).Length == 1);
+                // Names as other zip programs write them. Flag off (Windows Explorer: OEM code page, 857 on a Turkish PC):
+                // Python reads the bytes as cp437. Flag on: UTF-8. A "\" in a name: the worker on Windows has "/".
+                Encoding oem;
+                try { oem = Encoding.GetEncoding(857); } catch { oem = Encoding.GetEncoding(437); }
+                // Two files: an Update would write every name again with the UTF-8 flag.
+                string tr = "Ölçüm İrsaliye ğş.txt", zOem = Path.Combine(dir, "c", "oem.zip"), zUtf = Path.Combine(dir, "c", "utf8.zip");
+                Directory.CreateDirectory(Path.GetDirectoryName(zOem));
+                using (var z = new ZipArchive(File.Create(zOem), ZipArchiveMode.Create, false, oem))
+                {
+                    Write(z.CreateEntry("Klasör/" + tr), "oem");
+                    Write(z.CreateEntry("Dir\\b.txt"), "backslash");
+                }
+                using (var z = new ZipArchive(File.Create(zUtf), ZipArchiveMode.Create)) Write(z.CreateEntry("UTF/" + tr), "utf8"); // default: UTF-8 flag
+                string py = Encoding.GetEncoding(437).GetString(oem.GetBytes("Klasör/" + tr));
+                foreach (var t in new[] { new[] { py, "oem", zOem }, new[] { "UTF/" + tr, "utf8", zUtf }, new[] { "Dir/b.txt", "backslash", zOem } })
+                {
+                    string c = Path.Combine(dir, "c", t[1]); Directory.CreateDirectory(c);
+                    string zc = Path.Combine(c, "x.zip"); File.Copy(t[2], zc);
+                    string f = AttachmentCopy.ExtractMember(zc, t[0]);
+                    check("name_" + t[1], f != null && File.ReadAllText(f) == t[1] && Path.GetExtension(f) == ".txt");
+                    if (f != null) Console.WriteLine("attach_name_" + t[1] + "_file=" + Path.GetFileName(f));
+                }
+                // A member bigger than the cap (a zip bomb, or a false size in the header): stop, no part file stays.
+                string z3 = Path.Combine(dir, "d", "big.zip");
+                Directory.CreateDirectory(Path.GetDirectoryName(z3));
+                using (var z = new ZipArchive(File.Create(z3), ZipArchiveMode.Create))
+                using (var s = z.CreateEntry("big.txt", CompressionLevel.Optimal).Open())
+                {
+                    var buf = new byte[1 << 20];
+                    for (int i = 0; i < 20; i++) s.Write(buf, 0, buf.Length);
+                    s.WriteByte(0);
+                }
+                bool threw = false;
+                try { AttachmentCopy.ExtractMember(z3, "big.txt"); } catch (InvalidDataException) { threw = true; }
+                check("member_cap", threw && !File.Exists(Path.Combine(dir, "d", "big.txt")) && File.Exists(z3));
+                // The opened copy is read-only; Clean deletes it (and a read-only file) and the folder.
+                string root = AttachmentCopy.Root(dir), one = Path.Combine(root, "1234abcd");
+                Directory.CreateDirectory(one);
+                string p = Path.Combine(one, "x.txt");
+                File.WriteAllText(p, "x");
+                AttachmentCopy.Protect(p);
+                bool ro = (File.GetAttributes(p) & FileAttributes.ReadOnly) != 0;
+                string zone = ZoneOf(p);
+                bool motw = Environment.OSVersion.Platform != PlatformID.Win32NT || zone != null && zone.Contains("ZoneId=3");
+                AttachmentCopy.Clean(dir);
+                check("protect_clean", ro && motw && !Directory.Exists(root));
+            }
+            catch (Exception ex) { Console.WriteLine("attach_check exception " + ex.GetType().Name + ": " + ex.Message); ok = false; }
+            finally
+            {
+                if (Directory.Exists(dir))
+                {
+                    foreach (var f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories)) File.SetAttributes(f, FileAttributes.Normal);
+                    Directory.Delete(dir, true); // only the folder made above
+                }
+            }
+            Console.WriteLine(ok ? "PASS" : "FAIL");
+            return ok;
+        }
+
+        static void Write(ZipArchiveEntry e, string text) { using (var w = new StreamWriter(e.Open(), new UTF8Encoding(false))) w.Write(text); }
+
+        static string Sha256(string path)
+        {
+            using (var sha = SHA256.Create()) using (var f = File.OpenRead(path))
+                return BitConverter.ToString(sha.ComputeHash(f)).Replace("-", "").ToLowerInvariant();
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security,
+                                                                            uint disposition, uint flags, IntPtr template);
+
+        /// <summary>The Zone.Identifier stream of a file (Mark of the Web), or null (none, or not Windows).</summary>
+        static string ZoneOf(string path)
+        {
+            if (Environment.OSVersion.Platform != PlatformID.Win32NT) return null;
+            using (var h = CreateFile(path + ":Zone.Identifier", 0x80000000, 1, IntPtr.Zero, 3, 0, IntPtr.Zero)) // GENERIC_READ, OPEN_EXISTING
+            {
+                if (h.IsInvalid) return null;
+                using (var r = new StreamReader(new FileStream(h, FileAccess.Read), Encoding.ASCII)) return r.ReadToEnd();
+            }
         }
 
         // Ara tab: recent and saved searches in the window (Windows only: WinForms). Starts with no searches file (made by
@@ -624,10 +781,16 @@ namespace HatirMail
             string s1 = "Merhaba Furkan Bey, eylül ayına ait kargo faturası ekte gönderilmiştir. Toplam tutar 4.250 TL olup ödeme vadesi 30 gündür. İyi çalışmalar.";
             var list = new ArrayList {
                 r("E1", "Kargo faturası – Eylül 2026 (Hızlı Lojistik A.Ş.)", "Ahmet Demir", "yüksek", s1,
-                  new ArrayList { new ArrayList { s1.IndexOf("kargo"), 5 }, new ArrayList { s1.IndexOf("faturası"), 8 } }, new ArrayList { "kelime 2/2", "anlam 0.83", "tarih uygun" }),
+                  new ArrayList { new ArrayList { s1.IndexOf("kargo"), 5 }, new ArrayList { s1.IndexOf("faturası"), 8 } }, new ArrayList { "kelime 2/2", "anlam 0.83", "ekte" }),
                 r("E2", "Kargo faturası – Ağustos", "Ahmet Demir", "orta", "Ağustos kargo faturası ve irsaliye ekte.", new ArrayList { new ArrayList { 8, 5 }, new ArrayList { 14, 8 } },
                   new ArrayList { "kelime 2/2", "anlam 0.74", "tarih yakın" }),
                 r("E3", "Depo sayım sonuçları", "Ayşe Kaya", "zayıf", "Sayım dosyası ektedir.", new ArrayList(), new ArrayList { "kelime 1/2", "anlam 0.61", "ekte", "tarih dışı" }) };
+            // E1: a match in a zip member, with a long path (the bar line ends with "…"). E3: a result of an older worker
+            // (attachment name, no index): the line shows, the button is off. E2: a match in the mail text: no bar.
+            var e1 = (Dictionary<string, object>)list[0];
+            e1["match_attachment"] = "Kargo_Faturalari_2026.zip"; e1["match_att_index"] = 1;
+            e1["match_att_member"] = "Eylül/Hızlı Lojistik – Kargo faturası TR-4471 (düzeltilmiş, imzalı ve kaşeli son sürüm).pdf";
+            ((Dictionary<string, object>)list[2])["match_attachment"] = "Sayim_Eylul.xlsx";
             return new Dictionary<string, object> { {"ev", "results"}, {"stage", "final"}, {"results", list}, {"semantic", true},
                                                     {"date_windows", new ArrayList { "01.09.2026 – 30.09.2026" }} };
         }

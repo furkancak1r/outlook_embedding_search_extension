@@ -65,11 +65,15 @@ results for the indexed part). If stdin closes, the worker exits (code 3). Vecto
 
 ## Result object
 
-`eid, folder, subject, sender, recipients, date, snippet, hl, hl_subject, match_attachment, attachments, score,
-confidence ("yüksek"|"orta"|"zayıf"|"kelime"), why[], cos, z, coverage`
+`eid, folder, subject, sender, recipients, date, snippet, hl, hl_subject, match_attachment, match_att_index,
+match_att_member, attachments, score, confidence ("yüksek"|"orta"|"zayıf"|"kelime"), why[], cos, z, coverage`
 
 `hl`, `hl_subject`: `[[start, length], …]` of the query words in `snippet` and `subject`, in UTF-16 code units (the add-in
 marks them in the preview). `match_attachment`: the attachment name when the snippet comes from an attachment, else `null`.
+`match_att_index`: the 1-based Outlook index of that attachment (`att_meta`), else `null`. `match_att_member`: for a zip
+attachment, the path of the member that holds the snippet, as Python's `zipfile` names it (`/` separators; names without
+the UTF-8 flag in code page 437), else `null`. The add-in uses these two for "Eki aç"; an add-in that does not know them
+ignores them.
 
 ## Coverage object
 

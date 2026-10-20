@@ -109,8 +109,20 @@ değişen postaları işler.
    Pencere açılınca yapay zekâ modeli arka planda hazırlanır (durum çubuğunda "Yapay zekâ hazır" yazar). Pencere açık
    kaldıkça sonraki aramalar modeli beklemez.
 3. Bir sonuç seçin. Alttaki önizlemede konu, kişi, tarih ve eşleşen bölüm görünür; aranan sözcükler sarı zeminle
-   işaretlenir. Eşleşme bir ekin içindeyse "Ekte bulundu: dosya adı" yazar.
-4. Sonuca çift tıklayın ya da **Outlook'ta Aç**'a basın.
+   işaretlenir. Eşleşme bir ekin içindeyse önizlemenin üstünde "Ekte bulundu: dosya adı" yazar. Ek bir zip ise zip
+   içindeki dosyanın adı da yazar (`Arsiv.zip › Klasör/rapor.docx`).
+4. Postayı açmak için sonuca çift tıklayın ya da **Outlook'ta Aç**'a basın. Yalnız eki açmak için **Eki aç**'a basın
+   (kısayol: Alt+E). Ek, bilgisayarınızda o dosya türünü açan programla açılır (Excel, Word, PDF okuyucu…). Zip içindeki
+   bir dosyada yalnız o dosya açılır.
+
+**Eki aç** hakkında:
+
+- Açılan dosya ekin bir kopyasıdır. Kopya salt okunurdur. Office onu, Outlook'tan açılan bir ek gibi Korumalı Görünüm'de
+  açar.
+- Değişiklik yaparsanız dosyayı **Farklı Kaydet** ile başka bir klasöre kaydedin. Kopya HatırMail penceresi kapanınca
+  silinir. Postadaki asıl ek hiçbir durumda değişmez.
+- Eşleşme postanın kendi metnindeyse düğme görünmez. Posta taşınmış ya da değişmişse durum çubuğunda "Ek bulunamadı"
+  yazar; postayı **Outlook'ta Aç** ile açın. Zip içindeki dosya artık yoksa zip'in kendisi açılır.
 
 Arama, yeni postaları indekslemek için en çok **Aramada indeksleme** süresi kadar bekler (varsayılan 20 saniye). Kalan iş
 sonraki aramaya ya da İndeks sekmesine kalır. Arama kutusunun altındaki satır, aranan klasörlerin indeks durumunu gösterir.
@@ -220,6 +232,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail
   Eklerden okunan metin de yalnız bu indekste tutulur.
 - Ek okunurken eklenti eki `%LOCALAPPDATA%\HatirMail\data\tmp-att` klasörüne kopyalar. Arama işlemi kopyayı okur ve
   hemen siler; arama bitince klasör de silinir. Asıl eke ve postaya dokunulmaz.
+- **Eki aç** eki `%LOCALAPPDATA%\HatirMail\data\open-att` klasörüne kopyalar ve kopyayı açar. Bu kopyalar pencere
+  kapanınca silinir. O sırada bir program kopyayı açık tutuyorsa kopya, pencere bir sonraki açılışta silinir.
 - İndeksi istediğiniz zaman **Ayarlar** sekmesindeki **İndeksi sil** düğmesiyle silebilirsiniz ("İndeksi silme"
   bölümüne bakın).
 - Son ve kayıtlı aramalar yalnız `%LOCALAPPDATA%\HatirMail\data\searches.json` dosyasında düz metin olarak durur. Bu

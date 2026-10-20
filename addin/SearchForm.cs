@@ -41,6 +41,13 @@ namespace HatirMail
         readonly Label scopeLine = new Label();
         readonly ListView list = new ListView();
         readonly RichTextBox preview = new RichTextBox();
+        readonly Panel previewBox = new Panel();                         // the attachment bar and the preview
+        readonly TableLayoutPanel attBar = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 1, AutoSize = true, Visible = false };
+        readonly Label attLine = new Label();
+        readonly Button openAttBtn;
+        /// <summary>Opens a saved attachment copy with its program (test hook: TestHost records the path instead).
+        /// No program for the type: Windows asks for one (ErrorDialog).</summary>
+        public Action<string> Launch;
         // İndeks
         readonly ComboBox storeBox = new ComboBox();
         readonly ListView folderList = new ListView();
@@ -90,7 +97,7 @@ namespace HatirMail
             int line = TextRenderer.MeasureText("Ag", Font).Height;
 
             searchBtn = MakeButton("&Ara", true); stopBtn = MakeButton("D&urdur", false); openBtn = MakeButton("Outlook'ta A&ç", false);
-            historyBtn = MakeButton("Ara&malar ▼", false);
+            historyBtn = MakeButton("Ara&malar ▼", false); openAttBtn = MakeButton("&Eki aç", false);
             indexBtn = MakeButton("İndekslemeyi &başlat", true); indexStopBtn = MakeButton("&Durdur", false);
             refreshBtn = MakeButton("Durumu &yenile", false);
             saveBtn = MakeButton("&Kaydet", true); defaultsBtn = MakeButton("&Varsayılan değerler", false);
@@ -152,9 +159,21 @@ namespace HatirMail
             preview.Dock = DockStyle.Bottom; preview.Height = S(190); preview.ReadOnly = true; preview.DetectUrls = false;
             preview.BorderStyle = BorderStyle.FixedSingle; preview.BackColor = SystemColors.Window; preview.AccessibleName = "Önizleme";
             preview.ScrollBars = RichTextBoxScrollBars.Vertical;
-            qrow.TabIndex = 0; list.TabIndex = 1; preview.TabIndex = 2;
+            // Above the preview, only for a match inside an attachment: "Eki aç" + "Ekte bulundu: name › member".
+            attBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); attBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            attBar.Padding = new Padding(0, 0, 0, S(4));
+            attLine.AutoSize = false; attLine.AutoEllipsis = true; attLine.Height = line; attLine.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            attLine.Font = boldFont; attLine.ForeColor = Plain ? SystemColors.ControlText : AccentDark; attLine.TextAlign = ContentAlignment.MiddleLeft;
+            attBar.Controls.Add(openAttBtn, 0, 0); attBar.Controls.Add(attLine, 1, 0);
+            openAttBtn.Click += (s, e) => OpenAttachment();
+            preview.Dock = DockStyle.Fill;
+            previewBox.Dock = DockStyle.Bottom; previewBox.Height = S(190);
+            previewBox.Controls.Add(preview); previewBox.Controls.Add(attBar);
+            attBar.TabIndex = 0; preview.TabIndex = 1;
+            qrow.TabIndex = 0; list.TabIndex = 1; previewBox.TabIndex = 2;
             tabSearch.Controls.Add(list); tabSearch.Controls.Add(new Splitter { Dock = DockStyle.Bottom, Height = S(6), TabStop = false });
-            tabSearch.Controls.Add(preview); tabSearch.Controls.Add(scopeLine); tabSearch.Controls.Add(hint); tabSearch.Controls.Add(qrow);
+            tabSearch.Controls.Add(previewBox); tabSearch.Controls.Add(scopeLine); tabSearch.Controls.Add(hint); tabSearch.Controls.Add(qrow);
+            Launch = path => { using (Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, ErrorDialog = true, ErrorDialogParentHandle = Handle })) { } };
 
             // ---- İndeks: store, bars, live phase, start/stop, folders with their state
             var srow = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 3, RowCount = 1, AutoSize = true };
@@ -237,6 +256,7 @@ namespace HatirMail
                 MinimumSize = new Size(Math.Min(MinimumSize.Width, wa.Width), Math.Min(MinimumSize.Height, wa.Height));
                 Size = new Size(Math.Min(Width, wa.Width), Math.Min(Height, wa.Height));
                 ShowSettings(settings);
+                AttachmentCopy.Clean(settings.Data); // attachment copies that a program held at the last window close
                 LoadStores(); // also starts the index status check of the first store (a short worker run, no model)
                 ShowPreview();
                 FitColumns(list); FitColumns(folderList);
@@ -1004,9 +1024,18 @@ namespace HatirMail
             {
                 Append("Bir sonuç seçin: e-postanın eşleşen bölümü burada görünür, aranan sözcükler işaretlenir.", Font, SystemColors.GrayText, Color.Empty, false);
                 openBtn.Enabled = false;
+                attBar.Visible = false;
                 return;
             }
             var r = (Dictionary<string, object>)list.SelectedItems[0].Tag;
+            string inAtt = Str(r, "match_attachment"), member = Str(r, "match_att_member");
+            attBar.Visible = !string.IsNullOrEmpty(inAtt);
+            if (attBar.Visible)
+            {
+                attLine.Text = "Ekte bulundu: " + inAtt + (string.IsNullOrEmpty(member) ? "" : " › " + member);
+                openAttBtn.AccessibleDescription = attLine.Text;
+                openAttBtn.Enabled = AttIndex(r) > 0; // a result of an older worker has the name only
+            }
             Add(r["subject"] as string ?? "", titleFont, SystemColors.WindowText, Marks(r, "hl_subject"));
             preview.AppendText("\n");
             string date = list.SelectedItems[0].SubItems[2].Text;
@@ -1014,8 +1043,6 @@ namespace HatirMail
             string to = r.ContainsKey("recipients") ? r["recipients"] as string : "";
             if (!string.IsNullOrEmpty(to)) { preview.AppendText("\n"); Add("Kime: " + to, Font, SystemColors.GrayText, null); }
             preview.AppendText("\n\n");
-            string inAtt = r.ContainsKey("match_attachment") ? r["match_attachment"] as string : null;
-            if (!string.IsNullOrEmpty(inAtt)) { Add("Ekte bulundu: " + inAtt, boldFont, Plain ? SystemColors.WindowText : AccentDark, null); preview.AppendText("\n"); }
             Add(r["snippet"] as string ?? "", Font, SystemColors.WindowText, Marks(r, "hl"));
             string att = r["attachments"] as string;
             if (!string.IsNullOrEmpty(att)) { preview.AppendText("\n\n"); Add("Ekler: " + att, Font, SystemColors.GrayText, null); }
@@ -1068,6 +1095,53 @@ namespace HatirMail
             catch (Exception ex) { SetStatus("Posta açılamadı (taşınmış ya da silinmiş olabilir): " + ex.GetType().Name); }
         }
 
+        static string Str(Dictionary<string, object> r, string key) { object v; return r.TryGetValue(key, out v) ? v as string : null; }
+        static int AttIndex(Dictionary<string, object> r) { object v; return r.TryGetValue("match_att_index", out v) && v != null ? Convert.ToInt32(v) : 0; }
+
+        /// <summary>"Eki aç": save a copy of the matched attachment (for a zip: the matched member only), protect it (read-only,
+        /// Mark of the Web) and open it with its program. Outlook is not needed for the open; the mail is not changed.</summary>
+        void OpenAttachment()
+        {
+            if (list.SelectedItems.Count == 0) return;
+            var r = (Dictionary<string, object>)list.SelectedItems[0].Tag;
+            string eid = r["eid"] as string, want = Str(r, "match_attachment"), member = Str(r, "match_att_member");
+            int idx = AttIndex(r);
+            if (idx < 1) return;
+            string dir = null;
+            try
+            {
+                bool item;
+                string name = source.AttachmentName(eid, lastStoreId, idx, out item);
+                // The index can be older than the mail: the attachment at this place must have the matched name.
+                if (name == null || !string.Equals(name, want, StringComparison.OrdinalIgnoreCase))
+                {
+                    SetStatus("Ek bulunamadı. Posta değişmiş ya da silinmiş olabilir. Outlook'ta Aç ile postayı açın.");
+                    return;
+                }
+                string file = AttachmentCopy.SafeFileName(name);
+                if (item && !file.EndsWith(".msg", StringComparison.OrdinalIgnoreCase)) file += ".msg"; // SaveAsFile writes an Outlook item as .msg
+                dir = Path.Combine(AttachmentCopy.Root(settings.Data), Guid.NewGuid().ToString("N").Substring(0, 8));
+                Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, file);
+                if (!source.SaveAttachment(eid, lastStoreId, idx, path)) { SetStatus("Ek bulunamadı. Outlook'ta Aç ile postayı açın."); AttachmentCopy.DeleteCopy(dir); return; }
+                string shown = name, note = "";
+                if (!string.IsNullOrEmpty(member) && file.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    string m = AttachmentCopy.ExtractMember(path, member);
+                    if (m != null) { path = m; shown = Path.GetFileName(m); }
+                    else note = " Eşleşen dosya zip içinde bulunamadı; zip açıldı.";
+                }
+                AttachmentCopy.Protect(path);
+                Launch(path);
+                SetStatus("Ek açıldı: " + shown + "." + note + " Bu bir kopyadır; değiştirirseniz Farklı Kaydet ile başka bir yere kaydedin. Kopya pencere kapanınca silinir.");
+            }
+            catch (Exception ex)
+            {
+                AttachmentCopy.DeleteCopy(dir);
+                SetStatus("Ek açılamadı (" + ex.GetType().Name + "). Postayı Outlook'ta Aç ile açıp eki oradan açabilirsiniz.");
+            }
+        }
+
         void SetStatus(string s) { status.Text = s; }
 
         static Dictionary<string, object> Dict(Dictionary<string, object> d, string key)
@@ -1091,6 +1165,7 @@ namespace HatirMail
             closing = true; queued = null; // a search waiting for the end of an index run is dropped
             if (session != null) session.Stop("window closed");
             CloseWarm("window closed"); // the model never outlives the window
+            AttachmentCopy.Clean(settings.Data); // opened attachment copies (a file that a program holds: next window open)
         }
 
         /// <summary>Outlook closes or unloads the add-in: close the window and stop every worker.</summary>
@@ -1102,6 +1177,9 @@ namespace HatirMail
         public string ResultEid(int i) { return ((Dictionary<string, object>)list.Items[i].Tag)["eid"] as string; }
         public void SelectResult(int i) { list.Items[i].Selected = true; }
         public void ClickOpen() { OpenSelected(); }
+        public void ClickOpenAttachment() { OpenAttachment(); }
+        public string AttachLine { get { return attBar.Visible ? attLine.Text : null; } } // null: no attachment bar
+        public bool AttachButtonEnabled { get { return attBar.Visible && openAttBtn.Enabled; } }
         public void ClickStop() { StopSession(); }
         public string StatusText { get { return status.Text; } }
         public string CoverageText { get { return scopeLine.Text + " | " + pctRead.Text + " | " + pctSem.Text + " | " + pctAtt.Text; } }

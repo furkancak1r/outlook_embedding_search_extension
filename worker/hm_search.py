@@ -4,6 +4,7 @@ from datetime import datetime
 
 import numpy as np
 
+import hm_attach
 import hm_dates
 from hm_text import fold, tokens
 
@@ -113,16 +114,18 @@ def group_regex(vs):
 
 
 def snippet(text, regexes, span=None, width=220):
-    """Short window of the original text with the most query-term hits (else the best semantic chunk)."""
+    """(short window of the original text with the most query-term hits, else the best semantic chunk; anchor).
+    anchor: position in text of the first hit in the window, else of the chunk start."""
     if not text:
-        return ""
+        return "", 0
     f = fold(text)
     hits = sorted(m.start() for r in regexes for m in r.finditer(f))
     if hits:
         counts = [sum(1 for x in hits[i:] if x < h + width * 0.8) for i, h in enumerate(hits)]
-        start = max(0, hits[counts.index(max(counts))] - 50)
+        anchor = hits[counts.index(max(counts))]
+        start = max(0, anchor - 50)
     else:
-        start = span[0] if span else 0
+        anchor = start = span[0] if span else 0
     if start > 0:
         sp = text.rfind(" ", 0, start)
         start = sp + 1 if sp >= 0 and start - sp < 30 else start
@@ -130,7 +133,25 @@ def snippet(text, regexes, span=None, width=220):
     if end < len(text):
         sp = text.rfind(" ", start, end)
         end = sp if sp > start + width // 2 else end
-    return ("… " if start > 0 else "") + " ".join(text[start:end].split()) + (" …" if end < len(text) else "")
+    return ("… " if start > 0 else "") + " ".join(text[start:end].split()) + (" …" if end < len(text) else ""), anchor
+
+
+_MEMBER = re.compile(r"^\[(.+)\]$", re.M)
+
+
+def zip_member(name, text, pos):
+    """Path of the zip member whose text holds text[pos] (hm_attach.zip_text writes a "[member path]" line before each
+    member), or None when the attachment is not a zip. Lines of names that cannot be read (an xlsx sheet "[Sayfa1]")
+    are skipped. ponytail: a member text with a line such as "[Rapor.txt]" looks like a member start; the add-in then
+    does not find that member and opens the zip itself."""
+    if not (name or "").lower().endswith(".zip"):
+        return None
+    end = text.find("\n", pos)
+    found = None
+    for m in _MEMBER.finditer(text, 0, len(text) if end < 0 else end):  # the line of pos counts (a hit in the name)
+        if hm_attach.readable(m.group(1)):
+            found = m.group(1)
+    return found
 
 
 def marks(text, regexes):
@@ -227,7 +248,7 @@ def run(store, query, now, folder_ids, encoder=None, model_rev=None, dim=512, to
     for s, r, ds, conf in scored[:top_k]:
         it = info[r]
         chunk = store.chunk(r, best_seq[r]) if r in best_seq else None  # (src, start, end)
-        snip, att_name = _snippet(store, r, it, regexes, chunk)
+        snip, att_idx, att_name, member = _snippet(store, r, it, regexes, chunk)
         why = []
         if r in coverage:
             why.append("kelime %d/%d" % (round(coverage[r] * len(groups)), len(groups)))
@@ -240,7 +261,8 @@ def run(store, query, now, folder_ids, encoder=None, model_rev=None, dim=512, to
         out.append({
             "eid": it["entry_id"], "folder": it["folder_id"], "subject": it["subject"] or "(konu yok)",
             "sender": it["sender"] or "", "recipients": it["recipients"] or "", "date": it["sent_at"],
-            "snippet": snip, "match_attachment": att_name, "hl": marks(snip, regexes),
+            "snippet": snip, "match_attachment": att_name, "match_att_index": att_idx, "match_att_member": member,
+            "hl": marks(snip, regexes),
             "hl_subject": marks(it["subject"] or "", regexes),
             "attachments": it["attachments"] or "", "score": round(s, 5), "confidence": conf, "why": why,
             "cos": round(cos[r], 4) if r in cos else None, "z": round(z[r], 2) if r in z else None,
@@ -251,26 +273,25 @@ def run(store, query, now, folder_ids, encoder=None, model_rev=None, dim=512, to
 
 
 def _snippet(store, r, it, regexes, chunk):
-    """(snippet, attachment name or None) from the text with the most query words: the mail or one of its
-    attachments (a tie goes to the mail). Without a word hit: the best semantic chunk (body or attachment)."""
+    """(snippet, attachment index, attachment name, zip member) from the text with the most query words: the mail or
+    one of its attachments (a tie goes to the mail). Without a word hit: the best semantic chunk (body or attachment).
+    Index (1-based, as in Outlook), name and member are None for the mail text."""
     main = it["main_text"] or ""
     texts = store.att_texts(r) if regexes or (chunk and chunk[0]) else []  # [(idx, name, text)]
     def hits(t):
         f = fold(t)
         return sum(1 for rx in regexes if rx.search(f))
 
-    best, best_hits = (main, None), hits(main) if main else 0
-    for idx, name, text in texts:
-        n = hits(text)
+    best, best_hits = (None, None, main or it["attachments"] or ""), hits(main) if main else 0
+    for att in texts:
+        n = hits(att[2])
         if n > best_hits:
-            best, best_hits = (text, name), n
-    if best_hits:
-        return snippet(best[0], regexes), best[1]
-    if chunk and chunk[0]:
-        for idx, name, text in texts:
-            if idx == chunk[0]:
-                return snippet(text, [], (chunk[1], chunk[2])), name
-    return snippet(main or it["attachments"] or "", regexes, chunk[1:] if chunk else None), None
+            best, best_hits = att, n
+    if not best_hits and chunk and chunk[0]:
+        best = next((a for a in texts if a[0] == chunk[0]), best)
+    idx, name, text = best
+    snip, pos = snippet(text, regexes, None if best_hits else chunk[1:] if chunk else None)
+    return snip, idx, name, zip_member(name, text, pos)
 
 
 def encoder_query(text):

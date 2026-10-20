@@ -332,13 +332,34 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual(self.search("galvanizli raf dikmesi"), [])  # not read yet: nothing to find
         self.assertEqual(self.read_all(), ["ok", "ok", "ok"])
         r = self.search("galvanizli raf dikmesi")[0]
-        self.assertEqual((r["eid"], r["match_attachment"]), ("A1", "Stok_Sayim_Eylul.xlsx"))
+        self.assertEqual((r["eid"], r["match_attachment"], r["match_att_index"], r["match_att_member"]),
+                         ("A1", "Stok_Sayim_Eylul.xlsx", 1, None))  # xlsx sheet lines "[Sayfa]" are not members
         self.assertIn("Galvanizli raf dikmesi", r["snippet"])
         self.assertIn("ekte", r["why"])
         self.assertEqual(self.search("euro palet sayımı")[0]["eid"], "A2")
         self.assertEqual(self.search("soğuk zincir faturası")[0]["eid"], "A3")
         cov = self.store.coverage(["F1"])
         self.assertEqual((cov["att_total"], cov["att_done"]), (3, 3))
+
+    def test_match_inside_zip_member(self):
+        """'Eki aç': the result names the attachment (Outlook index) and the zip member that holds the words."""
+        self.ingest(att_mail("A1", "Dosyalar", ["Kalibrasyon_Notlari.txt", "Bakim_Arsivi.zip"], body="Merhaba, ekler ektedir."))
+        self.assertEqual(self.read_all(), ["ok", "ok"])
+        for q, member in [("nem ölçer sensörü arızası", "Bakim/bakim_notu.docx"), ("arşiv dosyası", "Bakim/okuma.txt")]:
+            r = self.search(q)[0]
+            self.assertEqual((r["eid"], r["match_attachment"], r["match_att_index"], r["match_att_member"]),
+                             ("A1", "Bakim_Arsivi.zip", 2, member), q)
+        r = self.search("ekler ektedir")[0]  # a hit in the mail text: no attachment
+        self.assertEqual((r["match_attachment"], r["match_att_index"], r["match_att_member"]), (None, None, None))
+
+    def test_zip_member_rule(self):
+        text = "[a/Rapor.docx]\nbir\n[Sayfa1]\niki\n[b.txt]\nüç"
+        self.assertEqual(hm_search.zip_member("x.zip", text, text.index("iki")), "a/Rapor.docx")  # "[Sayfa1]": no file name
+        self.assertEqual(hm_search.zip_member("X.ZIP", text, text.index("üç")), "b.txt")
+        self.assertEqual(hm_search.zip_member("x.zip", text, 1), "a/Rapor.docx")  # a hit in the member name line
+        self.assertIsNone(hm_search.zip_member("x.zip", "metin", 0))
+        self.assertIsNone(hm_search.zip_member("x.xlsx", text, text.index("üç")))
+        self.assertIsNone(hm_search.zip_member(None, text, 0))
 
     def test_same_file_read_once_and_moved_mail_keeps_text(self):
         self.ingest(att_mail("A1", "Fatura", ["Fatura_TR4471.pdf"]), att_mail("A2", "Kopya", ["Fatura_TR4471.pdf"]))

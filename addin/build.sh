@@ -7,7 +7,7 @@ REF="${NETFX_REF:-/opt/homebrew/Cellar/mono/6.14.1/lib/mono/4.8-api}"
 OUT="${1:-../build/addin}"
 mkdir -p "$OUT"
 REFS="-nostdlib -r:$REF/mscorlib.dll -r:$REF/System.dll -r:$REF/System.Core.dll -r:$REF/System.Drawing.dll \
- -r:$REF/System.Windows.Forms.dll -r:$REF/System.Web.Extensions.dll -r:$REF/Microsoft.CSharp.dll"
+ -r:$REF/System.Windows.Forms.dll -r:$REF/System.Web.Extensions.dll -r:$REF/Microsoft.CSharp.dll -r:$REF/System.IO.Compression.dll"
 csc -nologo -deterministic -langversion:7.3 -target:library -platform:anycpu -optimize+ -warnaserror- -nowarn:1591 \
     $REFS -out:"$OUT/HatirMail.dll" HatirMail.cs SearchForm.cs
 csc -nologo -deterministic -langversion:7.3 -target:winexe -platform:anycpu -optimize+ \

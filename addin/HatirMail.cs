@@ -10,11 +10,13 @@
 //    0 = exit after each search). Window close, Outlook close, cancel, error, timeout and keep-alive expiry end it
 //    (Job Object kill-on-close).
 //  - "Outlook'ta Aç" calls Namespace.GetItemFromID(...).Display(). It never sends, deletes, moves or marks mail.
+//  - "Eki aç" saves a copy of the matched attachment (Attachment.SaveAsFile) and opens the copy (AttachmentCopy).
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -271,6 +273,119 @@ namespace HatirMail
         }
     }
 
+    /// <summary>"Eki aç": copies of matched attachments in data\open-att\&lt;8 hex&gt;\. The copy is read-only (Ctrl+S cannot
+    /// save work into a file that is deleted later) and has the Mark of the Web, so Office opens it in Protected View, as
+    /// an attachment from Outlook. The mail and the attachment never change.</summary>
+    public static class AttachmentCopy
+    {
+        public const long MaxMember = 20L << 20; // = hm_attach.MAX_ZIP_MEMBER: the worker did not read more of a member
+
+        public static string Root(string dataDir) { return Path.Combine(dataDir, "open-att"); }
+
+        /// <summary>A Windows file name: no path, no reserved characters or device names, at most 120 characters with
+        /// the extension kept. "ek" when nothing is left.</summary>
+        public static string SafeFileName(string name)
+        {
+            var sb = new StringBuilder();
+            foreach (char c in name ?? "") sb.Append(c < 32 || "\"<>|:*?\\/".IndexOf(c) >= 0 ? '_' : c);
+            string n = sb.ToString().Trim().TrimEnd('.', ' ');
+            if (System.Text.RegularExpressions.Regex.IsMatch(n, @"^(con|prn|aux|nul|com\d|lpt\d)(\.|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) n = "_" + n;
+            if (n.Length > 120)
+            {
+                string ext = Path.GetExtension(n);
+                if (ext.Length > 20) ext = "";
+                n = n.Substring(0, 120 - ext.Length).TrimEnd('.', ' ') + ext;
+            }
+            return n.Length == 0 ? "ek" : n;
+        }
+
+        /// <summary>Extract the member with this path (as the worker names it) next to the zip, then delete the zip.
+        /// Returns the member file, or null when the zip has no such file (the zip stays). A name without the UTF-8 flag
+        /// is matched in code page 437, as Python's zipfile reads it; the file gets the name in the OEM code page of this PC
+        /// (857 on a Turkish PC), as Windows Explorer shows it. A member bigger than MaxMember throws InvalidDataException.</summary>
+        public static string ExtractMember(string zipPath, string member)
+        {
+            member = (member ?? "").Replace('\\', '/');
+            Func<ZipArchiveEntry, string> full = e => e.FullName.Replace('\\', '/'); // Python on Windows also reads "\" as "/"
+            int i;
+            using (var z = new ZipArchive(File.OpenRead(zipPath), ZipArchiveMode.Read, false, Encoding.GetEncoding(437)))
+                i = z.Entries.ToList().FindIndex(e => !full(e).EndsWith("/") && full(e) == member);
+            if (i < 0) return null;
+            Encoding oem;
+            try { oem = Encoding.GetEncoding(System.Globalization.CultureInfo.CurrentCulture.TextInfo.OEMCodePage); }
+            catch { oem = Encoding.GetEncoding(437); }
+            string path;
+            using (var z = new ZipArchive(File.OpenRead(zipPath), ZipArchiveMode.Read, false, oem))
+            {
+                var e = z.Entries[i]; // the same central directory: the same order
+                string fn = full(e);
+                path = Path.Combine(Path.GetDirectoryName(zipPath), SafeFileName(fn.Substring(fn.LastIndexOf('/') + 1)));
+                try
+                {
+                    using (var s = e.Open())
+                    using (var f = new FileStream(path, FileMode.CreateNew))
+                    {
+                        var buf = new byte[81920];
+                        long n = 0;
+                        int r;
+                        while ((r = s.Read(buf, 0, buf.Length)) > 0)
+                        {
+                            if ((n += r) > MaxMember) throw new InvalidDataException("zip member too big");
+                            f.Write(buf, 0, r);
+                        }
+                    }
+                }
+                catch { try { File.Delete(path); } catch { } throw; }
+            }
+            try { File.Delete(zipPath); } catch { } // not needed any more; Clean deletes it later if it stays
+            return path;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security,
+                                                                            uint disposition, uint flags, IntPtr template);
+
+        /// <summary>Make the copy read-only and give it the Mark of the Web (Zone.Identifier stream, zone 3 = Internet), as
+        /// a downloaded file. Windows only; an error throws: the caller does not open the file then.</summary>
+        public static void Protect(string path)
+        {
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+                // .NET Framework refuses ":" in a FileStream path: open the stream with CreateFile (GENERIC_WRITE, CREATE_ALWAYS).
+                using (var h = CreateFile(path + ":Zone.Identifier", 0x40000000, 0, IntPtr.Zero, 2, 0, IntPtr.Zero))
+                {
+                    if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    var b = Encoding.ASCII.GetBytes("[ZoneTransfer]\r\nZoneId=3\r\n");
+                    using (var f = new FileStream(h, FileAccess.Write)) f.Write(b, 0, b.Length);
+                }
+            File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly); // last: the stream write needs a writable file
+        }
+
+        /// <summary>Delete the copies (window open and close). A file that a program still holds stays until the next time.</summary>
+        public static void Clean(string dataDir)
+        {
+            string root = Root(dataDir);
+            try
+            {
+                if (!Directory.Exists(root)) return;
+                foreach (var d in Directory.GetDirectories(root)) DeleteCopy(d);
+                Directory.Delete(root); // only when empty
+            }
+            catch { }
+        }
+
+        /// <summary>Delete one copy folder (read-only files included). Errors are ignored: Clean tries again later.</summary>
+        public static void DeleteCopy(string dir)
+        {
+            try
+            {
+                if (dir == null || !Directory.Exists(dir)) return;
+                foreach (var f in Directory.GetFiles(dir)) File.SetAttributes(f, FileAttributes.Normal);
+                Directory.Delete(dir, true);
+            }
+            catch { }
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Mail source abstraction: Outlook (late-bound COM) or a JSON file (TestHost, no Outlook).
     // ---------------------------------------------------------------------------------------------
@@ -284,6 +399,9 @@ namespace HatirMail
         Dictionary<string, object> Read(string eid, string storeId, string folderId);
         /// <summary>Save attachment number idx (1-based) of a mail as path. Returns false if it is not there.</summary>
         bool SaveAttachment(string eid, string storeId, int idx, string path);
+        /// <summary>Name of attachment idx (1-based) as Read gives it (the worker has this name), or null if it is not
+        /// there. outlookItem: an attached Outlook item (SaveAsFile writes a .msg file).</summary>
+        string AttachmentName(string eid, string storeId, int idx, out bool outlookItem);
         void Open(string eid, string storeId);
     }
 
@@ -457,6 +575,29 @@ namespace HatirMail
             finally { Release(it); }
         }
 
+        public string AttachmentName(string eid, string storeId, int idx, out bool outlookItem)
+        {
+            outlookItem = false;
+            dynamic it = Ns.GetItemFromID(eid, storeId);
+            try
+            {
+                dynamic aa = it.Attachments;
+                try
+                {
+                    if (idx < 1 || idx > (int)aa.Count) return null;
+                    dynamic a = aa[idx];
+                    try
+                    {
+                        outlookItem = Safe(() => (int)a.Type) == 5;
+                        return Safe(() => (string)a.FileName) ?? Safe(() => (string)a.DisplayName) ?? ""; // the rule of Read
+                    }
+                    finally { Release(a); }
+                }
+                finally { Release(aa); }
+            }
+            finally { Release(it); }
+        }
+
         public void Open(string eid, string storeId)
         {
             dynamic it = Ns.GetItemFromID(eid, storeId);
@@ -553,6 +694,13 @@ namespace HatirMail
             File.Copy(Path.Combine(dir, paths[idx - 1]), path);
             Saved++;
             return true;
+        }
+
+        public string AttachmentName(string eid, string storeId, int idx, out bool outlookItem)
+        {
+            outlookItem = false;
+            var paths = AttPaths(msgs.First(x => (string)x["id"] == eid));
+            return idx < 1 || idx > paths.Count ? null : Path.GetFileName(paths[idx - 1]);
         }
 
         public void Open(string eid, string storeId) { Opened.Add(eid); }

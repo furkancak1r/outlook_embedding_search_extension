@@ -122,7 +122,14 @@ Outlook.exe (Klasik)
   arama eki `failed` yapar ve aynı dosyayı bir daha denemez.
 - **Sıralama:** ekteki BM25 sırası postanın kendi sırasının yarı ağırlığıyla eklenir (`0,5 × 0,5 / (10 + sıra)`);
   kelime kapsamı ekteki sözcükleri de sayar. Bu ağırlık kalibre edilmedi. Özet, sorgu sözcüklerinin
-  en çok geçtiği metinden (posta ya da ek) alınır ve `[Ek: ad]` ile gösterilir.
+  en çok geçtiği metinden (posta ya da ek) alınır. Önizlemenin üstünde "Ekte bulundu: ad" yazar.
+- **Eki aç (20 Ekim, kullanıcı isteği):** sonuç ekin Outlook sırasını (`match_att_index`) ve zip ekinde eşleşen üyenin
+  yolunu (`match_att_member`) taşır. Üye, `zip_text` metninde özetin ilk eşleşmesinden önceki son `[üye yolu]`
+  satırıdır. Eklenti eki `Attachment.SaveAsFile` ile `data\open-att\<8 hex>\` klasörüne kaydeder. Zip ise yalnız o üyeyi
+  `System.IO.Compression` ile çıkarır (üye başına en çok 20 MB, worker sınırıyla aynı). Kopyayı salt okunur yapar,
+  Mark of the Web ekler (`Zone.Identifier`, ZoneId=3: Office Korumalı Görünüm) ve Windows'un dosya türü ilişkisiyle
+  açar. Eklenti açmadan önce ekin adını o sıradaki ekle karşılaştırır (eski indeks yanlış eki açmaz). Kopyalar pencere
+  açılınca ve kapanınca silinir.
 - **Geçiş:** sürüm 1 indeksi açılınca her posta bir kez yeniden okunur (ek listesi için); var olan vektörler korunur.
 
 ### 5. Süreç yaşam döngüsü ve kaynak sınırları
@@ -170,7 +177,8 @@ Outlook.exe (Klasik)
   Protokol testi, sorgu metninin stderr'de görünmediğini denetler.
 - Eklenti postaları yalnız okur: `Send`, `Delete`, `Move`, `UnRead` gibi üyeleri hiç çağırmaz.
   `Body` okumak öğeyi okundu yapmaz; "Outlook'ta Aç" yalnız `Display()` çağırır. `Attachment.SaveAsFile` eki
-  değiştirmez; kopyası yalnız worker okuyana kadar yerel veri klasöründe durur.
+  değiştirmez; kopyası yalnız worker okuyana kadar yerel veri klasöründe durur. "Eki aç" kopyası pencere kapanana kadar
+  `data\open-att` klasöründe durur; açan program kopyayı tutuyorsa sonraki pencere açılışında silinir.
 - Ek metni de posta metni gibi yalnız yerel indekste tutulur; log'a ya da başka bir yere yazılmaz.
 - Her posta kutusu (store) ayrı SQLite dosyasıdır (`data\index\<store hash>.sqlite`).
 - **İndeksi sil** (Ayarlar sekmesi, onaydan sonra): eklenti `data\index` ve `data\tmp-att` klasörlerini siler. Vektörler
