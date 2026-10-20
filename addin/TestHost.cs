@@ -253,6 +253,7 @@ namespace HatirMail
                 Console.WriteLine("client_sizes default={0} min={1} root={2}", form.DesignClientSize, form.MinClientSize, root.Size);
                 Console.WriteLine("preview_marked_chars=" + form.PreviewMarkedChars);
                 ok &= form.PreviewMarkedChars > 0;
+                ok &= IndexDeleteCheck(form, settings); // last: it clears the results
                 Console.WriteLine(ok ? "PASS" : "FAIL");
                 code = ok ? 0 : 1;
                 form.Shutdown();
@@ -299,6 +300,34 @@ namespace HatirMail
             Console.WriteLine("settings_tmp_left=" + tmpLeft);
             File.Delete(settings.ConfigFile);
             return ok && clamp && !tmpLeft;
+        }
+
+        // Ayarlar "İndeksi sil". The confirmation dialog is modal: the check calls DeleteIndex (the code behind "Evet").
+        // A locked index file stops the delete without an exception; after the unlock, the second press deletes
+        // data\index and data\tmp-att, and settings.json stays. Runs only when the test data folder has no index.
+        static bool IndexDeleteCheck(SearchForm form, Settings settings)
+        {
+            string index = Path.Combine(settings.Data, "index"), att = Path.Combine(settings.Data, "tmp-att");
+            if (Directory.Exists(index) || Directory.Exists(att)) { Console.WriteLine("index_delete: data folder has an index, not touched: " + settings.Data + " -> FAIL"); return false; }
+            var btn = SearchForm.AllControls(form).OfType<Button>().FirstOrDefault(x => x.Text == "İndeksi &sil");
+            Directory.CreateDirectory(index); Directory.CreateDirectory(att);
+            string db = Path.Combine(index, "a.sqlite");
+            foreach (var f in new[] { db, db + "-wal", db + "-shm", Path.Combine(att, "000001.bin") }) File.WriteAllText(f, "x");
+            File.WriteAllText(settings.ConfigFile, "{\"threads\": 4}");
+            bool locked;
+            using (new FileStream(db, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                form.DeleteIndex();
+                locked = form.StatusText.StartsWith("İndeks silinemedi") && File.Exists(db);
+            }
+            form.DeleteIndex();
+            bool deleted = !Directory.Exists(index) && !Directory.Exists(att) && form.StatusText.StartsWith("İndeks silindi");
+            bool kept = File.Exists(settings.ConfigFile), cleared = form.ResultCount == 0, enabled = btn != null && btn.Enabled;
+            File.Delete(settings.ConfigFile);
+            bool ok = enabled && locked && deleted && kept && cleared;
+            Console.WriteLine("index_delete button={0} locked={1} deleted={2} settings_kept={3} results_cleared={4} -> {5}",
+                              enabled, locked, deleted, kept, cleared, ok ? "ok" : "FAIL");
+            return ok;
         }
 
         // Checks on the visible controls: text fits (labels, buttons, check boxes, tabs), controls stay inside the

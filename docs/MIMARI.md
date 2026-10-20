@@ -173,6 +173,10 @@ Outlook.exe (Klasik)
   değiştirmez; kopyası yalnız worker okuyana kadar yerel veri klasöründe durur.
 - Ek metni de posta metni gibi yalnız yerel indekste tutulur; log'a ya da başka bir yere yazılmaz.
 - Her posta kutusu (store) ayrı SQLite dosyasıdır (`data\index\<store hash>.sqlite`).
+- **İndeksi sil** (Ayarlar sekmesi, onaydan sonra): eklenti `data\index` ve `data\tmp-att` klasörlerini siler. Vektörler
+  ve ek metni önbelleği (`att_texts`, `fts_att`) aynı SQLite dosyasındadır. Silmeden önce hazır tutulan worker kapanır.
+  Oturum sürerken düğme kapalıdır; bu yüzden hiçbir worker dosyaları açık tutmaz. `settings.json` kalır. Worker ve
+  protokol değişmez. Silmeden sonraki durum okuması yeni dosya açmaz (bilinmeyen posta kutusu kuralı).
 - Eklenti ile worker arasında soket yoktur. Oturum belirteci (`HM_SESSION`) ortam değişkeniyle verilir;
   worker eşleşmeyen `begin` mesajını reddeder ve hiçbir dosya yazmaz.
 

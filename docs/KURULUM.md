@@ -169,6 +169,23 @@ Eski `embed_budget_s` ayarı artık kullanılmaz. Var olan bir `settings.json` k
 `search_index_budget_s` yoksa varsayılan 20 saniye, `keep_alive_min` yoksa varsayılan 10 dakika geçerlidir.
 İşlemci çekirdeği ya da bellek sınırı değişince hazır tutulan model kapanır; sonraki iş yeni değerlerle başlar.
 
+### İndeksi silme
+
+Yerel arama verilerini gizlilik için ya da bir sorunu gidermek için silebilirsiniz.
+
+> **Dikkat:** Bu işlem tüm posta kutularının indeksini siler. Sonra arama yapmak için indekslemeyi baştan başlatmanız
+> gerekir. Büyük bir posta kutusunda bu saatler sürebilir.
+
+1. **Ayarlar** sekmesinde **İndeksi sil**'e basın. Arama ya da indeksleme sürerken düğme kapalıdır.
+2. Onay penceresinde **Evet**'e basın. **Hayır** hiçbir şeyi değiştirmez.
+
+- Silinenler: `data\index` (her posta kutusu için posta metni, kelime ve anlam indeksi, eklerden okunan metin) ve
+  `data\tmp-att` (eklerin geçici kopyaları).
+- Silinmeyenler: Outlook'taki postalar ve ekler, `settings.json`.
+- Hazır tutulan yapay zekâ modeli de kapanır.
+- Silme yarıda kalırsa (başka bir program bir dosyayı kullanıyorsa) durum çubuğunda "İndeks silinemedi" yazar.
+  Biraz bekleyin ve yeniden deneyin.
+
 ## Kaldırma
 
 > **Dikkat:** Outlook'u kapatın. `-KeepData` vermezseniz yerel indeks silinir. Outlook'taki postalarınız hiçbir durumda silinmez.
@@ -190,6 +207,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail
   Eklerden okunan metin de yalnız bu indekste tutulur.
 - Ek okunurken eklenti eki `%LOCALAPPDATA%\HatirMail\data\tmp-att` klasörüne kopyalar. Arama işlemi kopyayı okur ve
   hemen siler; arama bitince klasör de silinir. Asıl eke ve postaya dokunulmaz.
+- İndeksi istediğiniz zaman **Ayarlar** sekmesindeki **İndeksi sil** düğmesiyle silebilirsiniz ("İndeksi silme"
+  bölümüne bakın).
 - Eklenti ile arama işlemi arasında ağ bağlantısı yoktur; iletişim yalnız işlemin kendi giriş/çıkış kanallarıyla yapılır.
 
 ## Sorun giderme
@@ -203,4 +222,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail
 | "Posta açılamadı" | Posta taşınmış ya da silinmiş olabilir. Yeni bir arama indeksi günceller. |
 | Resimdeki yazı bulunmuyor | Windows'ta o dilin OCR'ı yüklü olmayabilir (Ayarlar > Saat ve dil > Dil). Çok küçük ya da el yazısı metin okunamayabilir. |
 | Güncellemeden sonra "Okunan postalar" %0 görünüyor | İndeks sürüm 2'ye geçerken her posta bir kez yeniden okunur (ek listesi için). Var olan anlam indeksi korunur. İndeks sekmesinden indekslemeyi başlatın. |
+| Sonuçlar tutarsız ya da indeks hata veriyor | **Ayarlar** sekmesinde **İndeksi sil**'e basın, sonra İndeks sekmesinde **İndekslemeyi başlat**'a basın. |
 | Pencere yazıları kesik ya da üst üste | 0.1.0 sürümünün 15 Ekim 13:42 ve sonraki paketi yüksek DPI ekranlara (ör. %200 ölçek) uyar. Daha eski bir paket kuruluysa Outlook'u kapatın ve `install.ps1 -SkipRegistration` ile dosyaları güncelleyin. |

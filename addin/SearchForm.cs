@@ -48,7 +48,7 @@ namespace HatirMail
         // Ayarlar
         readonly NumericUpDown numThreads = new NumericUpDown(), numMemory = new NumericUpDown(), numBudget = new NumericUpDown(), numKeep = new NumericUpDown();
         readonly CheckBox chkAtt = new CheckBox();
-        readonly Button saveBtn, defaultsBtn;
+        readonly Button saveBtn, defaultsBtn, deleteBtn;
         // Status bar
         readonly Label status = new Label(), summary = new Label();
         readonly ProgressBar progress = new ProgressBar();
@@ -91,6 +91,7 @@ namespace HatirMail
             indexBtn = MakeButton("İndekslemeyi &başlat", true); indexStopBtn = MakeButton("&Durdur", false);
             refreshBtn = MakeButton("Durumu &yenile", false);
             saveBtn = MakeButton("&Kaydet", true); defaultsBtn = MakeButton("&Varsayılan değerler", false);
+            deleteBtn = MakeButton("İndeksi &sil", false);
 
             // Header band
             var title = new Label { Text = "HatırMail", AutoSize = true, Dock = DockStyle.Top, Font = new Font("Segoe UI Semibold", 15f * pt), UseCompatibleTextRendering = false,
@@ -196,7 +197,8 @@ namespace HatirMail
             chkAtt.AutoSize = true; chkAtt.Margin = new Padding(0, S(10), 0, S(10));
             sgrid.Controls.Add(chkAtt, 0, 8); sgrid.SetColumnSpan(chkAtt, 2);
             var sbtn = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
-            sbtn.Controls.Add(saveBtn); sbtn.Controls.Add(defaultsBtn);
+            deleteBtn.Margin = new Padding(S(24), deleteBtn.Margin.Top, deleteBtn.Margin.Right, deleteBtn.Margin.Bottom); // apart from Kaydet
+            sbtn.Controls.Add(saveBtn); sbtn.Controls.Add(defaultsBtn); sbtn.Controls.Add(deleteBtn);
             sgrid.Controls.Add(sbtn, 0, 9); sgrid.SetColumnSpan(sbtn, 2);
             var info = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, S(14), 0, 0), Anchor = AnchorStyles.Left | AnchorStyles.Right,
                                    Text = "Gizlilik: Arama, ek okuma ve yapay zekâ yalnız bu bilgisayarda çalışır. E-posta ve arama metni hiçbir yere gönderilmez ve günlüğe yazılmaz.\n" +
@@ -213,6 +215,7 @@ namespace HatirMail
             indexBtn.Click += (s, e) => StartIndex();
             refreshBtn.Click += (s, e) => StartStatus();
             saveBtn.Click += (s, e) => SaveSettings();
+            deleteBtn.Click += (s, e) => ConfirmDeleteIndex();
             defaultsBtn.Click += (s, e) => { ShowSettings(new Settings()); SetStatus("Varsayılan değerler yüklendi. Kaydetmek için Kaydet'e basın."); };
             FormClosing += OnClosing;
             Load += (s, e) =>
@@ -340,6 +343,44 @@ namespace HatirMail
                 settings.Attachments = oldAtt;
                 SetStatus("Ayarlar kaydedilemedi (" + ex.GetType().Name + "). Eski değerler geçerli.");
             }
+        }
+
+        void ConfirmDeleteIndex()
+        {
+            if (session != null) return;
+            if (MessageBox.Show(this, "Bu bilgisayardaki arama indeksi silinsin mi?\n\n" +
+                                "Silinecekler: tüm posta kutularının indeks dosyaları (posta metni, kelime ve anlam indeksi, eklerden okunan metin).\n" +
+                                "Silinmeyecekler: Outlook'taki postalarınız ve ekleri, ayarlarınız.\n\n" +
+                                "Sonra arama yapmak için İndeks sekmesinden indekslemeyi baştan başlatmanız gerekir. Büyük bir posta kutusunda bu saatler sürebilir.",
+                                "HatırMail", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            DeleteIndex();
+        }
+
+        /// <summary>Delete data\index (one SQLite file per store: mails, keyword index, vectors, attachment text) and
+        /// data\tmp-att. Outlook mail and settings.json stay. No worker may hold the files: the button is off during a
+        /// session, and the kept worker closes first (its model has nothing to search without an index).
+        /// ponytail: a file held by another program (antivirus, backup) stops the delete half way; the status check
+        /// below shows what is left, and the user presses again.</summary>
+        public void DeleteIndex()
+        {
+            if (session != null) { SetStatus("Önce çalışan aramayı ya da indekslemeyi durdurun."); return; }
+            CloseWarm("index deleted");
+            try
+            {
+                foreach (var d in new[] { "index", "tmp-att" })
+                {
+                    string p = Path.Combine(settings.Data, d);
+                    if (Directory.Exists(p)) Directory.Delete(p, true);
+                }
+                SetStatus("İndeks silindi. Outlook'taki postalarınız duruyor. Yeniden aramak için İndeks sekmesinde indekslemeyi başlatın.");
+            }
+            catch (Exception ex)
+            {
+                SetStatus("İndeks silinemedi (" + ex.GetType().Name + "). Başka bir program dosyaları kullanıyor olabilir. Biraz sonra yeniden deneyin.");
+            }
+            list.Items.Clear(); ShowPreview();
+            cov.Clear(); UpdateSummary(); phase.Text = "İndeksleme çalışmıyor.";
+            StartStatus(); // the real state; a status check makes no index file for an unknown store
         }
 
         // ------------------------------------------------------------------ scope
@@ -577,6 +618,7 @@ namespace HatirMail
             searchBtn.Enabled = m != "search"; indexBtn.Enabled = !Busy; refreshBtn.Enabled = m == null;
             stopBtn.Enabled = m == "search"; indexStopBtn.Enabled = m == "index";
             storeBox.Enabled = !Busy;
+            deleteBtn.Enabled = m == null; // no worker may hold the index files
             openBtn.Enabled = list.SelectedItems.Count > 0;
         }
 
