@@ -200,6 +200,52 @@ class StoreSearchTests(unittest.TestCase):
         self.assertFalse(st["stopped"])
         self.assertEqual(self.store.db.execute("SELECT count(*) FROM items WHERE embedded=0").fetchone()[0], 0)
 
+    def test_filters_narrow_results(self):
+        """Ara filters: only mails of the chosen sender / recipient; Turkish upper and lower case are one key; the
+        confidence of a mail is the same with and without a filter (z statistics on the whole scope)."""
+        with self.store.tx():
+            hm_index.ingest(self.store, mail("E6", "Kargo faturası", "Ekim kargo faturası ekte.", "2026-10-02T09:00:00",
+                                             "Zeynep Arslan", to="ŞÜKRÜ IŞIK; 'Furkan Çakır'"), 1, REV)
+        hm_index.embed_pending(self.store, lambda: self.enc, ["F1"], REV)
+        ahmet = hm_search.sender_key("Ahmet Demir", "ahmet@x.example")
+        run = lambda f: hm_search.run(self.store, "kargo faturası", NOW, ["F1"], encoder=self.enc, model_rev=REV,
+                                      allow=hm_search.allowed(self.store, ["F1"], f))["results"]
+        full = {r["eid"]: r for r in run(None)}
+        self.assertTrue({"E1", "E2", "E6"} <= set(full))
+        only = run({"sender": ahmet})
+        self.assertEqual({r["eid"] for r in only}, {"E1", "E2"})
+        self.assertEqual([(r["confidence"], r["cos"]) for r in only], [(full[r["eid"]]["confidence"], full[r["eid"]]["cos"]) for r in only])
+        self.assertEqual([r["eid"] for r in run({"recipient": hm_search.sender_key("Şükrü Işık", "")})], ["E6"])
+        self.assertEqual({r["eid"] for r in run({"recipient": "furkan cakir"})} & {"E1", "E2", "E6"}, {"E1", "E2", "E6"})
+        self.assertEqual(run({"sender": ahmet, "recipient": "sukru isik"}), [])
+        self.assertEqual(hm_search.allowed(self.store, ["F1"], {"sender": None, "recipient": ""}), None)
+        kw = hm_search.run(self.store, "sunucu bakımı", NOW, ["F1"], allow=hm_search.allowed(self.store, ["F1"], {"sender": ahmet}))
+        self.assertEqual(kw["results"], [])  # keyword stage too
+
+    def test_similar(self):
+        """"Benzerlerini bul": the nearest mails by the stored vectors; the mail itself is not a result; the same topic
+        comes first; unknown mail / mail without vectors; filters apply."""
+        sim = lambda eid, **kw: hm_search.similar(self.store, eid, ["F1"], REV, **kw)
+        res = sim("E1")
+        eids = [r["eid"] for r in res["results"]]
+        self.assertEqual((res["similar_to"]["eid"], res["similar_to"]["embedded"]), ("E1", True))
+        self.assertNotIn("E1", eids)
+        self.assertEqual(eids[0], "E2")  # the other "Kargo faturası"
+        self.assertEqual(len(eids), 3)  # E2, E3, E4 (E5 is an NDR: not indexed)
+        self.assertTrue(res["results"][0]["why"][0].startswith("benzerlik "))
+        self.assertEqual(sim("X9")["similar_to"], None)
+        with self.store.tx():
+            hm_index.ingest(self.store, mail("E7", "Yeni", "Henüz vektörü yok."), 1, REV)
+        self.assertEqual((sim("E7")["similar_to"]["embedded"], sim("E7")["results"]), (False, []))
+        allow = hm_search.allowed(self.store, ["F1"], {"sender": hm_search.sender_key("Sarah Miller", "sarah@x.example")})
+        self.assertEqual([r["eid"] for r in sim("E1", allow=allow)["results"]], ["E3"])
+
+    def test_facets(self):
+        f = hm_search.facets(self.store)
+        self.assertEqual(f["senders"][0], ["ahmet@x.example", "Ahmet Demir", "ahmet@x.example", 2])
+        self.assertEqual(f["recipients"], [["furkan cakir", "Furkan Çakır", 4]])
+        self.assertEqual(len(hm_search.facets(self.store, limit=1)["senders"]), 1)
+
     def test_coverage(self):
         with self.store.tx():
             self.store.set_folder("F1", "\\Gelen Kutusu", 6)
@@ -448,6 +494,25 @@ class AttachmentTests(unittest.TestCase):
         self.assertIsNone(self.store.item_state(["E1"])["E1"][1])  # read again once, for the attachment list
         self.assertEqual(self.store.db.execute("SELECT embedded FROM items").fetchone()[0], 1)  # vectors kept
 
+    def test_sync_columns_migration(self):
+        """A v2 file from before "Güncelle": a folder that was read completely counts as indexed at its last scan; a
+        partly read folder does not. A later scan (set_folder) keeps the flag."""
+        self.ingest(mail("E1", "a", "a"), mail("E2", "b", "b"), mail("P1", "c", "c", folder="F2"))
+        with self.store.tx():
+            self.store.set_folder("F1", "\\F1", 2)
+            self.store.set_folder("F2", "\\F2", 3)  # 1 of 3 read
+        self.store.db.execute("ALTER TABLE items DROP COLUMN added_gen")
+        self.store.db.execute("ALTER TABLE folders DROP COLUMN synced_gen")
+        scanned = self.store.db.execute("SELECT scanned_at FROM folders WHERE id='F1'").fetchone()[0]
+        self.store.close()
+        self.store = Store(os.path.join(self.tmp.name, "t.sqlite"), REV)
+        self.assertEqual(self.store.synced(["F1", "F2"]), {"F1"})
+        self.assertEqual(self.store.db.execute("SELECT synced_gen FROM folders WHERE id='F1'").fetchone()[0], int(scanned * 1000))
+        self.assertEqual({a for (a,) in self.store.db.execute("SELECT added_gen FROM items")}, {0})
+        with self.store.tx():
+            self.store.set_folder("F1", "\\F1 yeni", 5)
+        self.assertEqual(self.store.synced(["F1"]), {"F1"})
+
 
 class ProtocolTests(unittest.TestCase):
     """Start the real worker process (fake encoder) and talk JSON lines to it."""
@@ -688,13 +753,95 @@ class ProtocolTests(unittest.TestCase):
                 self.close(p)
                 self.assertEqual((ev[-1]["status"], ev[-1]["detail"], p.returncode), ("error", detail, 2))
 
+    def test_update_mode_processes_only_changes(self):
+        """"Güncelle": after an index run, only the changes: changed mails, new mails of completely indexed folders, and
+        their attachments and vectors. Old backlog (an attachment of an old mail, a mail of a never-indexed folder) waits
+        for "İndekslemeyi başlat". Deleted mails leave the index. A search scan keeps the folder flag."""
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as att_dir:
+            e1 = mail("E1", "Kargo faturası", "Eylül kargo faturası.", "2026-09-12T09:00:00")
+            e2 = mail("E2", "Sunucu bakımı", "Cumartesi bakım.", "2026-09-20T09:00:00")
+            a1 = att_mail("A1", "Sayım dosyası", ["Stok_Sayim_Eylul.xlsx"], date="2026-09-01T09:00:00")
+            n1 = mail("N1", "Teklif", "Raf sistemi teklifi ektedir.", "2026-10-01T09:00:00")
+            b1 = mail("B1", "Bülten", "Haftalık bülten.", "2026-10-02T09:00:00", folder="F2")
+            n2 = att_mail("N2", "Fatura", ["Fatura_TR4471.pdf"], date="2026-10-05T09:00:00")
+            b2 = mail("B2", "Bülten iki", "İkinci bülten.", "2026-10-06T09:00:00", folder="F2")
+            e2c = dict(e2, mod="2026-10-03T09:00:00", body="Pazar sabahı bakım.")
+            both = ("F1", "F2")
+            self.run_session(d, [e1, e2, a1], "", mode="index")  # F1 indexed; attachments off: A1's file waits
+            _, _, need = self.run_session(d, [e1, e2, a1, n1, b1], "kargo", folders=both, index_budget_s=0)
+            self.assertEqual(need, {"N1", "B1"})  # read by a search, not embedded (no indexing time)
+            now = [e2c, a1, n1, n2, b1, b2]
+            ev, code, need = self.run_session(d, now, "", folders=both, att_dir=att_dir, mode="update")
+            done = ev[-1]
+            self.assertEqual((code, done["status"], done["mode"]), (0, "ok", "update"))
+            self.assertEqual(need, {"E2", "N2"})  # B2: new in a never-indexed folder
+            self.assertEqual((done["stats"]["unsynced_skipped"], done["stats"]["removed"]), (1, 1))
+            self.assertEqual([a for e in ev if e["ev"] == "need_att" for a in e["atts"]], [["N2", 1, "Fatura_TR4471.pdf"]])
+            self.assertNotIn("results", [e["ev"] for e in ev])
+            db = sqlite3.connect(next(Path(d, "index").glob("*.sqlite")))
+            embedded = dict(db.execute("SELECT entry_id, embedded FROM items"))
+            att_state = db.execute("SELECT a.state FROM atts a JOIN items i ON i.rowid=a.item_rowid WHERE entry_id='A1'").fetchone()[0]
+            db.close()
+            self.assertEqual(embedded, {"E2": 1, "A1": 1, "N1": 1, "N2": 1, "B1": 0})
+            self.assertEqual(att_state, "pending")
+            self.run_session(d, now, "", folders=both, att_dir=att_dir, mode="index")  # F2 indexed now
+            ev, code, need = self.run_session(d, now, "", folders=both, att_dir=att_dir, mode="update")
+            self.assertEqual((need, ev[-1]["stats"]["unsynced_skipped"], ev[-1]["stats"]["embed"]["embedded_chunks"]),
+                             (set(), 0, 0))
+            self.assertFalse(ev[-1]["model_loaded"] or "model" in [e.get("phase") for e in ev])  # nothing to do: no model
+            self.assertTrue(ev[-1]["coverage"]["complete"])
+
     def test_unknown_mode_rejected(self):
         with tempfile.TemporaryDirectory() as d:
+            for extra, detail in (({"mode": "delete"}, "unknown mode"), ({"filters": ["x"]}, "bad filters"),
+                                  ({"filters": {"sender": 5}}, "bad filters")):
+                p = self.start(d)
+                self.send(p, op="begin", session="s" * 32, store={"id": "S"}, folders=[{"id": "F1"}], **extra)
+                ev = self.events(p)
+                self.close(p)
+                self.assertEqual((ev[-1]["status"], ev[-1]["detail"], p.returncode), ("error", detail, 2))
+
+    def test_similar_mode(self):
+        """Worker mode similar: hello -> results -> done, no scan, no model; unknown store: no index file; a missing
+        similar_eid is an error."""
+        with tempfile.TemporaryDirectory() as d:
+            begin = lambda p, **kw: self.send(p, op="begin", session="s" * 32, mode="similar", store={"id": "S1"},
+                                              folders=[{"id": "F1"}], **kw)
             p = self.start(d)
-            self.send(p, op="begin", session="s" * 32, mode="delete", store={"id": "S"}, folders=[{"id": "F1"}])
+            begin(p, similar_eid="E1")
             ev = self.events(p)
             self.close(p)
-            self.assertEqual((ev[-1]["status"], ev[-1]["detail"], p.returncode), ("error", "unknown mode", 2))
+            self.assertEqual(([e["ev"] for e in ev], ev[1]["similar_to"], p.returncode), (["hello", "results", "done"], None, 0))
+            self.assertFalse(os.path.exists(os.path.join(d, "index")))
+            mails = [mail("E1", "Kargo faturası", "Eylül kargo faturası ekte.", "2026-09-12T09:00:00"),
+                     mail("E2", "Kargo faturası", "Ekim kargo faturası ekte.", "2026-10-12T09:00:00"),
+                     mail("E3", "Sunucu bakımı", "Cumartesi gecesi planlı bakım.", "2026-09-20T09:00:00")]
+            self.run_session(d, mails, "", mode="index")
+            p = self.start(d)
+            begin(p, similar_eid="E1", keep_alive_s=30)
+            ev = self.events(p)
+            self.assertEqual(([e["ev"] for e in ev], ev[-1]["status"], ev[-1]["model_loaded"]), (["hello", "results", "done"], "ok", False))
+            self.assertEqual([r["eid"] for r in ev[1]["results"]], ["E2", "E3"])
+            self.assertNotIn("model", [e.get("phase") for e in ev])
+            begin(p)  # the next session in the same process: no similar_eid
+            ev = self.events(p)
+            self.close(p)
+            self.assertEqual((ev[-1]["status"], ev[-1]["detail"], p.returncode), ("error", "similar_eid missing", 2))
+
+    def test_search_filters_and_facets_protocol(self):
+        """done.facets lists the senders and recipients of the index file (also in status mode); begin.filters narrows
+        the keyword and the final results."""
+        with tempfile.TemporaryDirectory() as d:
+            mails = [mail("E1", "Kargo faturası", "Eylül kargo faturası.", "2026-09-12T09:00:00", "Ahmet Demir"),
+                     mail("E2", "Kargo faturası", "Ekim kargo faturası.", "2026-10-12T09:00:00", "Zeynep Arslan", folder="F2")]
+            self.run_session(d, mails, "", folders=("F1", "F2"), mode="index")
+            ev, _ = self.status(d)  # scope F1 only: the facets are the whole file
+            self.assertEqual([s[0] for s in ev[-1]["facets"]["senders"]], ["ahmet@x.example", "zeynep@x.example"])
+            ev, code, need = self.run_session(d, mails, "kargo faturası", folders=("F1", "F2"),
+                                              filters={"sender": "zeynep@x.example", "recipient": None})
+            res = {e["stage"]: [r["eid"] for r in e["results"]] for e in ev if e["ev"] == "results"}
+            self.assertEqual((code, res), (0, {"keyword": ["E2"], "final": ["E2"]}))
 
     def close(self, p):
         for f in (p.stdin, p.stdout, p.stderr):

@@ -24,7 +24,6 @@ static class OlbCheck
         {"_NameSpace", new[] {"Stores", "GetStoreFromID", "GetFolderFromID", "GetItemFromID"}},
         {"_Stores", new[] {"Count", "Item"}},
         {"_Store", new[] {"StoreID", "DisplayName", "GetRootFolder"}},
-        {"MAPIFolder", new[] {"Folders", "Name", "DefaultItemType", "EntryID", "Items", "GetTable"}},
         {"_Folders", new[] {"Count", "Item"}},
         {"_Items", new[] {"Count"}},
         {"_Table", new[] {"Columns", "EndOfTable", "GetNextRow"}},
@@ -32,7 +31,11 @@ static class OlbCheck
         {"_Row", new[] {"Item"}},
         {"_MailItem", new[] {"MessageClass", "LastModificationTime", "Subject", "Body", "SenderName", "SenderEmailType",
                              "Sender", "SenderEmailAddress", "To", "CC", "ReceivedTime", "SentOn", "Attachments",
-                             "Display", "CreationTime"}},
+                             "Display", "CreationTime", "EntryID", "Parent"}},
+        // "Benzerlerini bul": the context of the mail shortcut menu. The PIA has "Selection : IEnumerable" (no "_Selection"
+        // base, unlike Folders : _Folders), so the type library name is taken as "Selection"; OlbCheck on 2.19 confirms it.
+        {"Selection", new[] {"Count", "Item"}},
+        {"MAPIFolder", new[] {"Folders", "Name", "DefaultItemType", "EntryID", "Items", "GetTable", "StoreID"}},
         {"Attachments", new[] {"Count", "Item"}},
         {"Attachment", new[] {"FileName", "DisplayName", "Size", "Type", "SaveAsFile"}},
         {"AddressEntry", new[] {"GetExchangeUser"}},

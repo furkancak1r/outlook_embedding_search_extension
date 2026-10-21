@@ -132,6 +132,37 @@ Outlook.exe (Klasik)
   açılınca ve kapanınca silinir.
 - **Geçiş:** sürüm 1 indeksi açılınca her posta bir kez yeniden okunur (ek listesi için); var olan vektörler korunur.
 
+### 4b. Güncelle, filtreler ve benzer e-postalar (21 Ekim, kullanıcı isteği)
+
+- **Güncelle (İndeks sekmesi, worker modu `update`):** yalnız son tam indekslemeden sonra gelen, değişen, taşınan ve
+  silinen postaları işler.
+  - Bir indeksleme okumayı durdurulmadan bitirince klasör `folders.synced_gen` alır. Her posta, eklendiği ya da
+    değiştiği oturumun numarasını `items.added_gen` alanında tutar.
+  - Güncelle değişen postaları her zaman okur. Yeni kimlikleri yalnız tam indekslenmiş klasörlerde okur; öteki
+    klasörlerdeki yeni postalar sayılır ve atlanır (`unsynced_skipped`). İndekste olmayan bir posta, o klasör hiç tam
+    okunmadıysa eski bir posta da olabilir.
+  - Ekler ve anlam indeksi yalnız bu fark (delta) için yapılır. Eski birikmiş işe İndekslemeyi başlat bakar.
+  - Klasör listesindeki kimlikler kullanılır, değişiklik zamanı kullanılmaz. Bir PST içinde taşıma EntryID'yi
+    değiştirir. Taşımanın değişiklik zamanını koruyup korumadığı doğrulanmadı.
+  - Eski indeks dosyalarında tamamen okunmuş klasör, son taramasında indekslenmiş sayılır. İndeks sürümü 2 olarak kalır.
+- **Filtreler (Ara sekmesi):** Gönderen, Alıcı ve Klasör açılır listeleri. Gönderen ve alıcı listeleri her `done`
+  olayıyla gelen `facets` alanından dolar (indeks dosyasının tamamı, en çok 1.000 değer). Klasör listesi İndeks
+  sekmesindeki işaretli klasörlerdir; alt klasörler ayrı satırdır ve dahil değildir.
+  - Worker Türkçe katlamayla eşleştirir ("ÇAKIR" = "Çakır").
+  - Filtre aday kümesini daraltır. Güven etiketi filtreli ve filtresiz aramada aynıdır (z istatistiği tüm kapsamdan).
+  - Filtre değişince arama yeniden başlamaz; durum çubuğu Ara'ya basmayı söyler.
+- **Benzerlerini bul (Outlook'ta bir postaya sağ tık, worker modu `similar`):** postanın indeksteki vektörleriyle arar.
+  Model yüklenmez, sorgu yazılmaz, tarama ve posta okuma yoktur.
+  - Kaynak vektör, gövde parçalarının ortalamasıdır. Aday, en iyi parçasıyla puanlanır. Kaynak posta sonuçlarda yoktur.
+  - Güven: kosinüs ≥ 0,85 Yüksek, ≥ 0,80 Orta, altı Zayıf (gri). Eşikler sentetik verideki ölçümden alındı (aşağıda).
+  - Ara filtreleri benzer aramada da uygulanır.
+  - Menü `ContextMenuMailItem` içindedir. `IRibbonControl.Context` bir `Selection` nesnesidir; ilk öğe okunur. Eklenti
+    yalnız `EntryID`, `Parent.EntryID` ve `Parent.StoreID` değerlerini okur.
+  - Posta indekste yoksa ya da anlam indeksi yoksa durum çubuğu Güncelle'yi önerir.
+- **Ölçüm (21 Ekim, Mac, ONNX vektörleri, 310 posta, 32 konu ailesi, `eval/similar_eval.py`):** 100 aile postasında ilk 5
+  sonucun 0,98'i aynı ailedendir. "Yüksek" etiketli 190 sonucun 172'si (0,905) aynı ailedendir. Kaynak posta hiçbir
+  sonuçta yoktur.
+
 ### 5. Süreç yaşam döngüsü ve kaynak sınırları
 
 - Outlook açılırken model yüklenmez, alt süreç başlamaz, zamanlayıcı ya da yoklama (polling) yoktur. Arka planda
@@ -217,6 +248,12 @@ oldu; gerçek kutuda süre henüz ölçülmedi. Arama artık bunu beklemez (sür
 | Kalan süre aşama başınadır | İndeks sekmesi o anki aşamanın (okuma, ek, anlam) kalan süresini gösterir, toplamı göstermez | Aşama hızlarını kaydedip toplam tahmin |
 | Hazır model bellekte yer tutar | Pencere açıkken worker ~1–1,5 GB bellek kullanır | Ayarlar: hazır tutma süresini kısaltın ya da 0 yapın |
 | Vektör araması kaba kuvvet (tüm vektörler bellekte) | 100.000 parça için ~200 MB, birkaç yüz ms | ANN dizini (ör. HNSW) |
+| Güncelle, hiç tam indekslenmemiş klasördeki yeni postayı okumaz | Bu postalar sayılır; durum metni İndekslemeyi başlat'ı önerir | Klasör başına son okunan değişiklik zamanı (PST taşımasında davranış doğrulandıktan sonra) |
+| Filtreli kelime araması dosyanın en iyi 400 sonucuyla sınırlı | Çok yaygın bir sözcükte, filtredeki bir posta yalnız anlamıyla bulunabilir | FTS sorgusuna rowid kümesi koşulu |
+| Filtre listeleri her işte bütün postaları tarar | 100.000 postada ~0,2 sn | Kişiler tablosu |
+| Benzerlik eşikleri kalibre edilmedi | Yalnız sentetik 32 aileyle ölçüldü | Gerçek kutudan etiketli örneklerle kalibrasyon |
+| Pencere "Benzerlerini bul" ile açılınca ilk benzer arama modeli bekler | Pencere açılışındaki durum okuması modeli arka planda yükler (`preload`); worker yeni işi yükleme bitince alır (2.19'da soğuk yükleme ~5 sn). Benzer arama modeli kullanmaz | Benzer arama için ayrı, model yüklemeyen bir worker ya da `preload` içinde bekleyen `begin` denetimi |
+| Sağ tık menüsü SSH ile sınanamaz | `Context` nesnesinin `Selection` olduğu bir topluluk yanıtına dayanır; yedek yol (doğrudan öğe) ve OlbCheck üyeleri vardır | Kullanıcı kabul adımı (`docs/KURULUM.md`) |
 | Yazım hatası genişletmesi sözlükte doğrusal tarama | ~10^5 terimde birkaç yüz ms | Sözlük üzerinde trigram FTS |
 | Alıntı/imza ayıklama sezgiseldir | Alışılmadık biçimler ana metinde kalabilir | Daha çok kalıp |
 | Yeni Outlook desteklenmez | Yalnız Klasik Outlook | Bölüm 2'deki Graph + köprü yolu |

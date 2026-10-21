@@ -86,28 +86,91 @@ namespace HatirMail
         public string GetCustomUI(string ribbonId)
         {
             if (ribbonId != "Microsoft.Outlook.Explorer") return null;
-            return "<customUI xmlns=\"http://schemas.microsoft.com/office/2009/07/customui\"><ribbon><tabs>" +
-                   "<tab idMso=\"TabMail\"><group id=\"HatirMailGroup\" label=\"HatırMail\">" +
-                   "<button id=\"HatirMailSearch\" label=\"HatırMail ile Ara\" size=\"large\" imageMso=\"FindDialog\"" +
-                   " screentip=\"Hatırladıklarınızla e-posta bulun\" onAction=\"OnSearch\"/>" +
-                   "</group></tab></tabs></ribbon></customUI>";
+            return CustomUI;
         }
+
+        /// <summary>Ribbon button (Home tab) and the "Benzerlerini bul" command in the shortcut menu of a mail.</summary>
+        public const string CustomUI =
+            "<customUI xmlns=\"http://schemas.microsoft.com/office/2009/07/customui\"><ribbon><tabs>" +
+            "<tab idMso=\"TabMail\"><group id=\"HatirMailGroup\" label=\"HatırMail\">" +
+            "<button id=\"HatirMailSearch\" label=\"HatırMail ile Ara\" size=\"large\" imageMso=\"FindDialog\"" +
+            " screentip=\"Hatırladıklarınızla e-posta bulun\" onAction=\"OnSearch\"/>" +
+            "</group></tab></tabs></ribbon>" +
+            "<contextMenus><contextMenu idMso=\"ContextMenuMailItem\">" +
+            "<button id=\"HatirMailSimilar\" label=\"Benzerlerini bul\" imageMso=\"FindDialog\"" +
+            " screentip=\"HatırMail: aynı konudaki e-postaları bul\" onAction=\"OnSimilar\"/>" +
+            "</contextMenu></contextMenus></customUI>";
 
         public void OnSearch([MarshalAs(UnmanagedType.IDispatch)] object control)
         {
-            try
-            {
-                if (form == null || form.IsDisposed)
-                    form = new SearchForm(new OutlookSource(app), Settings.Load());
-                form.Show(); // a window minimized during an index run comes back
-                if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
-                form.Activate();
-            }
+            try { ShowForm(); }
             catch (Exception ex)
             {
                 MessageBox.Show("HatırMail açılamadı: " + ex.GetType().Name, "HatırMail", MessageBoxButtons.OK,
                                 MessageBoxIcon.Warning);
             }
+        }
+
+        /// <summary>"Benzerlerini bul" (shortcut menu of a mail): the window opens and searches with the stored vectors of the
+        /// first selected mail. The mail is only read (entry id, folder, store).</summary>
+        public void OnSimilar([MarshalAs(UnmanagedType.IDispatch)] object control)
+        {
+            string eid = null, storeId = null, folderId = null;
+            object ctx = null;
+            try
+            {
+                dynamic ctl = control;
+                ctx = ctl.Context;
+                MailRef(ctx, out eid, out storeId, out folderId);
+            }
+            catch { eid = null; }
+            finally { if (ctx != null && Marshal.IsComObject(ctx)) Marshal.ReleaseComObject(ctx); }
+            if (string.IsNullOrEmpty(eid) || string.IsNullOrEmpty(storeId))
+            {
+                MessageBox.Show("Seçili e-posta okunamadı. Bir e-posta seçip yeniden deneyin.", "HatırMail", MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                return;
+            }
+            try { ShowForm().FindSimilar(eid, storeId, folderId); }
+            catch (Exception ex)
+            {
+                MessageBox.Show("HatırMail açılamadı: " + ex.GetType().Name, "HatırMail", MessageBoxButtons.OK,
+                                MessageBoxIcon.Warning);
+            }
+        }
+
+        /// <summary>The context of ContextMenuMailItem is a Selection ([1] = the clicked mail, its default member Item); a mail
+        /// object is also accepted. Every COM object taken here is released. Throws when the context has no mail.</summary>
+        public static void MailRef(object ctx, out string eid, out string storeId, out string folderId)
+        {
+            eid = storeId = folderId = null;
+            dynamic item = null, parent = null;
+            try
+            {
+                dynamic c = ctx;
+                bool selection = false;
+                try { selection = (int)c.Count >= 1; } catch { } // a mail object has no Count
+                item = selection ? c[1] : ctx;
+                eid = item.EntryID;
+                parent = item.Parent;
+                folderId = parent.EntryID;
+                storeId = parent.StoreID;
+            }
+            finally
+            {
+                if (parent != null && Marshal.IsComObject(parent)) Marshal.ReleaseComObject(parent);
+                if (item != null && !ReferenceEquals(item, ctx) && Marshal.IsComObject(item)) Marshal.ReleaseComObject(item);
+            }
+        }
+
+        SearchForm ShowForm()
+        {
+            if (form == null || form.IsDisposed)
+                form = new SearchForm(new OutlookSource(app), Settings.Load());
+            form.Show(); // a window minimized during an index run comes back
+            if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
+            form.Activate();
+            return form;
         }
     }
 

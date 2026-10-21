@@ -39,6 +39,9 @@ namespace HatirMail
         readonly ContextMenuStrip historyMenu = new ContextMenuStrip { ShowItemToolTips = true };
         SearchHistory history; // recent and saved searches (data\searches.json)
         readonly Label scopeLine = new Label();
+        // Filters (Ara tab): sender and recipient values from the worker (done.facets), folder = a checked İndeks folder.
+        readonly ComboBox senderBox = new ComboBox(), recipientBox = new ComboBox(), folderBox = new ComboBox();
+        bool fillingFilters;
         readonly ListView list = new ListView();
         readonly RichTextBox preview = new RichTextBox();
         readonly Panel previewBox = new Panel();                         // the attachment bar and the preview
@@ -53,7 +56,7 @@ namespace HatirMail
         readonly ListView folderList = new ListView();
         readonly ProgressBar barRead = new ProgressBar(), barSem = new ProgressBar(), barAtt = new ProgressBar();
         readonly Label pctRead = new Label(), pctSem = new Label(), pctAtt = new Label(), phase = new Label();
-        readonly Button indexBtn, indexStopBtn, refreshBtn;
+        readonly Button indexBtn, updateBtn, indexStopBtn, refreshBtn;
         // Ayarlar
         readonly NumericUpDown numThreads = new NumericUpDown(), numMemory = new NumericUpDown(), numBudget = new NumericUpDown(), numKeep = new NumericUpDown();
         readonly CheckBox chkAtt = new CheckBox();
@@ -68,6 +71,7 @@ namespace HatirMail
         public int LastExcludedRemoved = -1; // test hook: excluded_removed of the last done
         bool purgeAsked;    // the next status check applies a new folder exclusion: it reports the deleted mails
         string notice;      // that report: it stays in front of the model texts until the next session starts
+        string filterNote = ""; // the filters of the running or last search (status text)
         readonly Dictionary<string, FolderCov> cov = new Dictionary<string, FolderCov>();
         WorkerSession session;
         WorkerProcess warm; // kept worker between sessions (window open, keep-alive on): the model stays loaded
@@ -103,7 +107,7 @@ namespace HatirMail
 
             searchBtn = MakeButton("&Ara", true); stopBtn = MakeButton("D&urdur", false); openBtn = MakeButton("Outlook'ta A&ç", false);
             historyBtn = MakeButton("Ara&malar ▼", false); openAttBtn = MakeButton("&Eki aç", false);
-            indexBtn = MakeButton("İndekslemeyi &başlat", true); indexStopBtn = MakeButton("&Durdur", false);
+            indexBtn = MakeButton("İndekslemeyi &başlat", true); updateBtn = MakeButton("&Güncelle", false); indexStopBtn = MakeButton("&Durdur", false);
             refreshBtn = MakeButton("Durumu &yenile", false);
             saveBtn = MakeButton("&Kaydet", true); defaultsBtn = MakeButton("&Varsayılan değerler", false);
             deleteBtn = MakeButton("İndeksi &sil", false); excludeBtn = MakeButton("Klasörleri &hariç tut…", false);
@@ -149,6 +153,25 @@ namespace HatirMail
             qrow.Controls.Add(stopBtn, 3, 0); qrow.Controls.Add(openBtn, 4, 0);
             var hint = Wrap(new Label { ForeColor = SystemColors.GrayText, Padding = new Padding(0, S(4), 0, 0),
                                         Text = "İpucu: kişi, konu, yaklaşık tarih ya da ekteki bir sözcük yazın. Örnek: geçen ay Ahmet'ten gelen kargo faturası" });
+            // Filter row: three drop-down lists in equal columns; "(tümü)" = no filter. A change applies at the next Ara.
+            // The table lays out each list with the height of a new list (default font), centered in the row; Windows then
+            // makes the list taller (window font), and the row cut it at the bottom (2.19, 2x test: 22 px in the table, 40
+            // px on screen). So: the row height comes from the real list height, and the lists start at the row top.
+            var frow = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 6, RowCount = 1, AutoSize = true, Padding = new Padding(0, S(4), 0, 0), Font = Font };
+            int col = 0;
+            foreach (var f in new[] { Tuple.Create("Gö&nderen:", senderBox, "Gönderen filtresi"), Tuple.Create("A&lıcı:", recipientBox, "Alıcı filtresi"),
+                                      Tuple.Create("Kla&sör:", folderBox, "Klasör filtresi") })
+            {
+                frow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); frow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.3F));
+                frow.Controls.Add(new Label { Text = f.Item1, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(col == 0 ? 0 : S(10), 0, S(4), 0) }, col++, 0);
+                var box = f.Item2;
+                box.DropDownStyle = ComboBoxStyle.DropDownList; box.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top; box.Margin = new Padding(0, S(2), 0, S(2));
+                box.AccessibleName = f.Item3; box.MaxDropDownItems = 20;
+                box.Items.Add(Choice.All); box.SelectedIndex = 0;
+                box.SelectedIndexChanged += (s, e) => { if (!fillingFilters && session == null) SetStatus("Filtre değişti. Uygulamak için Ara'ya basın."); };
+                frow.Controls.Add(box, col++, 0);
+            }
+            frow.RowStyles.Add(new RowStyle(SizeType.Absolute, senderBox.PreferredHeight + senderBox.Margin.Vertical)); // after Add: the font of the row
             Wrap(scopeLine); scopeLine.Padding = new Padding(0, S(4), 0, S(8));
             scopeLine.Cursor = Cursors.Hand; scopeLine.Click += (s, e) => tabs.SelectedTab = tabIndex;
             list.Dock = DockStyle.Fill; list.View = View.Details; list.FullRowSelect = true; list.MultiSelect = false;
@@ -172,12 +195,13 @@ namespace HatirMail
             attBar.Controls.Add(openAttBtn, 0, 0); attBar.Controls.Add(attLine, 1, 0);
             openAttBtn.Click += (s, e) => OpenAttachment();
             preview.Dock = DockStyle.Fill;
-            previewBox.Dock = DockStyle.Bottom; previewBox.Height = S(190);
+            // 160 (was 190): the filter row takes its place, the result list keeps its height.
+            previewBox.Dock = DockStyle.Bottom; previewBox.Height = S(160);
             previewBox.Controls.Add(preview); previewBox.Controls.Add(attBar);
             attBar.TabIndex = 0; preview.TabIndex = 1;
-            qrow.TabIndex = 0; list.TabIndex = 1; previewBox.TabIndex = 2;
+            qrow.TabIndex = 0; frow.TabIndex = 1; list.TabIndex = 2; previewBox.TabIndex = 3;
             tabSearch.Controls.Add(list); tabSearch.Controls.Add(new Splitter { Dock = DockStyle.Bottom, Height = S(6), TabStop = false });
-            tabSearch.Controls.Add(previewBox); tabSearch.Controls.Add(scopeLine); tabSearch.Controls.Add(hint); tabSearch.Controls.Add(qrow);
+            tabSearch.Controls.Add(previewBox); tabSearch.Controls.Add(scopeLine); tabSearch.Controls.Add(hint); tabSearch.Controls.Add(frow); tabSearch.Controls.Add(qrow);
             Launch = path => { using (Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, ErrorDialog = true, ErrorDialogParentHandle = Handle })) { } };
 
             // ---- İndeks: store, bars, live phase, start/stop, folders with their state
@@ -196,9 +220,11 @@ namespace HatirMail
             BarRow(grid, 2, "Ek dosyaları", barAtt, pctAtt);
             Wrap(phase); phase.Padding = new Padding(0, S(4), 0, S(6)); phase.Font = boldFont; phase.Text = "İndeksleme çalışmıyor.";
             var brow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = false };
-            brow.Controls.Add(indexBtn); brow.Controls.Add(indexStopBtn);
+            updateBtn.AccessibleDescription = "Yalnız son indekslemeden sonra gelen, değişen, taşınan ve silinen postaları işler";
+            brow.Controls.Add(indexBtn); brow.Controls.Add(updateBtn); brow.Controls.Add(indexStopBtn);
             var note = Wrap(new Label { ForeColor = SystemColors.GrayText, Padding = new Padding(0, S(2), 0, S(8)),
-                                        Text = "Tam indeksleme uzun sürebilir; bu sırada Outlook'u kullanabilirsiniz. Durdurursanız yapılan iş kaydedilir ve sonra kaldığı yerden sürer. Outlook kapanınca indeksleme de durur." });
+                                        Text = "Tam indeksleme uzun sürebilir; bu sırada Outlook'u kullanabilirsiniz. Durdurursanız yapılan iş kaydedilir ve sonra kaldığı yerden sürer. Outlook kapanınca indeksleme de durur. " +
+                                               "Güncelle yalnız son indekslemeden sonra gelen, değişen, taşınan ve silinen postaları işler." });
             var flabel = Wrap(new Label { Padding = new Padding(0, 0, 0, S(4)),
                                           Text = "Klasörler (işaretli klasörler aranır ve indekslenir; Ayarlar'da hariç tutulan klasörler bu listede yoktur):" });
             folderList.Dock = DockStyle.Fill; folderList.View = View.Details; folderList.CheckBoxes = true; folderList.FullRowSelect = true;
@@ -210,7 +236,7 @@ namespace HatirMail
             // ItemChecked also comes while Windows builds the native list (first show of the İndeks tab, with visual
             // styles): some items are not there yet (Outlook, 16 Oct: NullReferenceException). The summary runs once,
             // after that message. A running search or index run keeps the folder scope of its start.
-            folderList.ItemChecked += (s, e) => { if (!loadingFolders) QueueSummary(); };
+            folderList.ItemChecked += (s, e) => { if (!loadingFolders) QueueSummary(); }; // the summary also rebuilds the folder filter
             srow.TabIndex = 0; brow.TabIndex = 1; folderList.TabIndex = 2;
             tabIndex.Controls.Add(folderList); tabIndex.Controls.Add(flabel); tabIndex.Controls.Add(note); tabIndex.Controls.Add(brow);
             tabIndex.Controls.Add(phase); tabIndex.Controls.Add(grid); tabIndex.Controls.Add(srow);
@@ -251,6 +277,7 @@ namespace HatirMail
             indexStopBtn.Click += (s, e) => StopSession();
             openBtn.Click += (s, e) => OpenSelected();
             indexBtn.Click += (s, e) => StartIndex();
+            updateBtn.Click += (s, e) => StartUpdate();
             refreshBtn.Click += (s, e) => StartStatus();
             saveBtn.Click += (s, e) => SaveSettings();
             deleteBtn.Click += (s, e) => ConfirmDeleteIndex();
@@ -722,6 +749,71 @@ namespace HatirMail
             return folderList.Items.Cast<ListViewItem>().Where(i => i.Checked).Select(i => (FolderInfo)i.Tag).ToList();
         }
 
+        // ------------------------------------------------------------------ filters (Ara tab)
+        /// <summary>An item of a filter list: Key = the value for the worker (null = "(tümü)").</summary>
+        sealed class Choice
+        {
+            public static readonly Choice All = new Choice { Text = "(tümü)" };
+            public string Key, Text;
+            public override string ToString() { return Text; }
+        }
+
+        static string KeyOf(ComboBox b) { var c = b.SelectedItem as Choice; return c != null ? c.Key : null; }
+
+        /// <summary>Fill a filter list (sorted by the Turkish alphabet after "(tümü)") and keep the chosen value by its key; a
+        /// value that is gone gives "(tümü)". An open list is not changed (the user is choosing).</summary>
+        void Fill(ComboBox box, IEnumerable<Choice> values)
+        {
+            if (box.DroppedDown) return;
+            string keep = KeyOf(box);
+            var all = values.OrderBy(c => c.Text, StringComparer.Create(TR, true)).ToList();
+            fillingFilters = true;
+            box.BeginUpdate();
+            box.Items.Clear(); box.Items.Add(Choice.All);
+            box.Items.AddRange(all.ToArray());
+            int i = keep == null ? -1 : all.FindIndex(c => c.Key == keep);
+            box.SelectedIndex = i + 1;
+            box.EndUpdate();
+            fillingFilters = false;
+            int w = all.Select(c => TextRenderer.MeasureText(c.Text, box.Font).Width).DefaultIfEmpty(0).Max() + SystemInformation.VerticalScrollBarWidth + S(8);
+            box.DropDownWidth = Math.Max(box.Width, Math.Min(S(500), w));
+        }
+
+        /// <summary>Sender and recipient values of the index file (done.facets): [[key, name, address, mails]], [[key, name, mails]].</summary>
+        void ShowFacets(Dictionary<string, object> f)
+        {
+            Func<string, IEnumerable<ArrayList>> rows = k => f != null && f.ContainsKey(k) && f[k] is ArrayList ? ((ArrayList)f[k]).Cast<ArrayList>() : Enumerable.Empty<ArrayList>();
+            Fill(senderBox, rows("senders").Select(r =>
+            {
+                string name = r[1] as string ?? "", addr = r[2] as string ?? "";
+                return new Choice { Key = (string)r[0], Text = addr.Length == 0 || string.Equals(addr, name, StringComparison.OrdinalIgnoreCase) ? name : name + " <" + addr + ">" };
+            }));
+            Fill(recipientBox, rows("recipients").Select(r => new Choice { Key = (string)r[0], Text = r[1] as string ?? "" }));
+        }
+
+        /// <summary>Folder filter = one of the folders checked on the İndeks tab (each folder is one line there, so its subfolders
+        /// are not included). Rebuilt only when the checked folders change.</summary>
+        void RefreshFolderFilter()
+        {
+            var sel = SelectedFolders();
+            var now = new HashSet<string>(folderBox.Items.Cast<Choice>().Skip(1).Select(c => c.Key)); // the list is sorted by name
+            if (!now.SetEquals(sel.Select(f => f.Id))) Fill(folderBox, sel.Select(f => new Choice { Key = f.Id, Text = f.Path.TrimStart('\\') }));
+        }
+
+        /// <summary>The scope and the filters of a search: the folder filter narrows the checked folders, the sender and
+        /// recipient keys go to the worker (begin.filters). note: the active filters for the status text ("" = none).</summary>
+        public List<FolderInfo> FilteredScope(List<FolderInfo> sel, out Dictionary<string, object> filters, out string note)
+        {
+            string fid = KeyOf(folderBox);
+            if (fid != null) sel = sel.Where(f => f.Id == fid).ToList();
+            filters = new Dictionary<string, object> { {"sender", KeyOf(senderBox)}, {"recipient", KeyOf(recipientBox)} };
+            var parts = new List<string>();
+            foreach (var b in new[] { Tuple.Create("gönderen", senderBox), Tuple.Create("alıcı", recipientBox), Tuple.Create("klasör", folderBox) })
+                if (KeyOf(b.Item2) != null) parts.Add(b.Item1 + " " + b.Item2.Text);
+            note = parts.Count == 0 ? "" : " Filtre: " + string.Join(", ", parts) + ".";
+            return sel;
+        }
+
         // ------------------------------------------------------------------ sessions (one worker at a time)
         bool CanStart(out StoreItem st, out List<FolderInfo> sel)
         {
@@ -740,31 +832,68 @@ namespace HatirMail
         {
             string q = query.Text.Trim();
             if (q.Length == 0) { SetStatus("Önce hatırladığınız birkaç ayrıntıyı yazın."); query.Focus(); return; }
-            if (session != null)
-            {
-                if (session.Mode == "search") return;
-                if (session.Mode == "index")
-                {
-                    // One worker at a time: the index run stops (its work is saved), then the search runs.
-                    if (MessageBox.Show(this, "İndeksleme sürüyor. Arama için indeksleme durdurulsun mu?\n\nYapılan iş kaydedilir. " +
-                                        "İndekslemeyi sonra İndeks sekmesinden kaldığı yerden sürdürebilirsiniz.", "HatırMail",
-                                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-                    queued = () => { query.Text = q; StartSearch(); };
-                    StopSession();
-                    return;
-                }
-                queued = () => { query.Text = q; StartSearch(); }; // a status check (about a second): the search follows it
-                return;
-            }
+            if (session != null && session.Mode == "search") return;
+            if (!ReadyOrQueue(() => { query.Text = q; StartSearch(); })) return;
             StoreItem st; List<FolderInfo> sel;
             if (!CanStart(out st, out sel)) return;
+            Dictionary<string, object> filters;
+            sel = FilteredScope(sel, out filters, out filterNote);
             RememberSearch(q);
             list.Items.Clear(); ShowPreview();
             EventNames.Clear(); modelSeen = false;
             lastStoreId = st.Id;
-            Begin(new WorkerSession(this, source, settings, "search", st.Id, st.Name, sel, q));
+            Begin(new WorkerSession(this, source, settings, "search", st.Id, st.Name, sel, q) { Filters = filters });
             SetStatus(ModelState == "loading" ? "Arama başladı. Yapay zekâ modeli hazırlanıyor (pencere açılınca başladı)…"
                     : ModelState == "ready" ? "Arama başladı. Yapay zekâ hazır." : "Arama başladı…");
+        }
+
+        /// <summary>One worker at a time. No session: true. An index run: it stops after a confirmation (its work is saved)
+        /// and retry runs after it. Another session (status check, Güncelle, a search): retry runs after it.</summary>
+        bool ReadyOrQueue(Action retry)
+        {
+            if (session == null) return true;
+            if (session.Mode == "index")
+            {
+                if (MessageBox.Show(this, "İndeksleme sürüyor. Arama için indeksleme durdurulsun mu?\n\nYapılan iş kaydedilir. " +
+                                    "İndekslemeyi sonra İndeks sekmesinden kaldığı yerden sürdürebilirsiniz.", "HatırMail",
+                                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return false;
+                queued = retry;
+                StopSession();
+                return false;
+            }
+            queued = retry;
+            if (session.Mode == "update") SetStatus("Arama, güncelleme bitince başlayacak.");
+            return false;
+        }
+
+        /// <summary>"Benzerlerini bul" (Outlook shortcut menu): the mails nearest to this mail, by its stored vectors (worker
+        /// mode similar: no model load, no query). The Ara filters apply. folderId null: no exclusion check (tests).</summary>
+        public void FindSimilar(string eid, string storeId, string folderId)
+        {
+            tabs.SelectedTab = tabSearch;
+            var cur = storeBox.SelectedItem as StoreItem;
+            if (cur == null || cur.Id != storeId)
+            {
+                if (Busy) { SetStatus("E-posta başka bir posta kutusunda. Önce çalışan aramayı ya da indekslemeyi durdurun."); return; }
+                int i = storeBox.Items.Cast<StoreItem>().ToList().FindIndex(x => x.Id == storeId);
+                if (i < 0) { SetStatus("Bu e-postanın posta kutusu bulunamadı."); return; }
+                storeBox.SelectedIndex = i; // LoadFolders: the folder list and a status check; the search waits for it
+            }
+            if (folderId != null && excludedIds.Contains(folderId))
+            {
+                SetStatus("Bu e-postanın klasörü Ayarlar'da indeksten hariç tutulmuş. Benzerleri aranamaz.");
+                return;
+            }
+            if (!ReadyOrQueue(() => FindSimilar(eid, storeId, folderId))) return;
+            StoreItem st; List<FolderInfo> sel;
+            if (!CanStart(out st, out sel)) return;
+            Dictionary<string, object> filters;
+            sel = FilteredScope(sel, out filters, out filterNote);
+            list.Items.Clear(); ShowPreview();
+            EventNames.Clear(); modelSeen = false;
+            lastStoreId = st.Id;
+            Begin(new WorkerSession(this, source, settings, "similar", st.Id, st.Name, sel, "") { Filters = filters, SimilarEid = eid });
+            SetStatus("Benzer e-postalar aranıyor…");
         }
 
         public void StartIndex()
@@ -781,6 +910,26 @@ namespace HatirMail
             phase.Text = "İndeksleme başladı: klasör listeleri okunuyor…";
             SetStatus("İndeksleme başladı. Bu pencereyi kapatabilir ya da arama yapmadan bekleyebilirsiniz.");
         }
+
+        /// <summary>"Güncelle": only the mails that came, changed, moved or were deleted after the last index run (worker mode
+        /// update). New mails of a folder that was never indexed completely wait for "İndekslemeyi başlat".</summary>
+        public void StartUpdate()
+        {
+            if (session != null)
+            {
+                if (session.Mode == "status") queued = StartUpdate;
+                return;
+            }
+            StoreItem st; List<FolderInfo> sel;
+            if (!CanStart(out st, out sel)) return;
+            EventNames.Clear(); modelSeen = false;
+            Begin(new WorkerSession(this, source, settings, "update", st.Id, st.Name, sel, ""));
+            phase.Text = "Güncelleme başladı: klasör listeleri okunuyor…";
+            SetStatus("Güncelleme başladı: yalnız son indekslemeden sonraki değişiklikler işlenir.");
+        }
+
+        static bool IndexLike(string mode) { return mode == "index" || mode == "update"; } // no query, no time limit, Durdur on the İndeks tab
+        static string ModeName(string mode) { return mode == "index" ? "İndeksleme" : mode == "update" ? "Güncelleme" : mode == "similar" ? "Benzer arama" : "Arama"; }
 
         /// <summary>Index state of the selected folders: a short worker run (no scan, no mail reading). With keep-alive on,
         /// the worker then loads the model in the background when the store has a semantic index (preload), so that the
@@ -890,8 +1039,8 @@ namespace HatirMail
         void UpdateButtons()
         {
             string m = session != null ? session.Mode : null;
-            searchBtn.Enabled = m != "search"; indexBtn.Enabled = !Busy; refreshBtn.Enabled = m == null;
-            stopBtn.Enabled = m == "search"; indexStopBtn.Enabled = m == "index";
+            searchBtn.Enabled = m != "search"; indexBtn.Enabled = updateBtn.Enabled = !Busy; refreshBtn.Enabled = m == null;
+            stopBtn.Enabled = m == "search"; indexStopBtn.Enabled = IndexLike(m);
             storeBox.Enabled = !Busy;
             deleteBtn.Enabled = m == null; // no worker may hold the index files
             excludeBtn.Enabled = m == null && allFolders.Count > 0;
@@ -907,7 +1056,7 @@ namespace HatirMail
             switch (name)
             {
                 case "hello":
-                    if (mode != "status") SetStatus("Klasörler taranıyor (silinen ve taşınan postalar)…");
+                    if (mode != "status" && mode != "similar") SetStatus("Klasörler taranıyor (silinen ve taşınan postalar)…");
                     break;
                 case "progress":
                     ShowProgress(mode, ev);
@@ -918,11 +1067,14 @@ namespace HatirMail
                 case "done":
                     if (ev.ContainsKey("peak_rss_mb") && ev["peak_rss_mb"] != null) WorkerPeakMb = Convert.ToDouble(ev["peak_rss_mb"]);
                     string stt = ev.ContainsKey("status") ? ev["status"] as string : "";
+                    LastDoneStats = Dict(ev, "stats");
+                    if (ev.ContainsKey("facets") && ev["facets"] != null) ShowFacets(Dict(ev, "facets")); // older worker: lists stay
                     if (stt == "error" && mode != "status")
-                        SetStatus((mode == "index" ? "İndeksleme" : "Arama") + " tamamlanamadı (" + (ev.ContainsKey("error") ? ev["error"] : "") + "). Yeniden deneyin.");
+                        SetStatus(ModeName(mode) + " tamamlanamadı (" + (ev.ContainsKey("error") ? ev["error"] : "") + "). Yeniden deneyin.");
                     if (stt == "cancelled")
                         SetStatus("Durduruldu. Yapılan iş kaydedildi; sonraki arama ya da indeksleme kaldığı yerden sürer.");
                     if (stt == "ok" && mode == "index") SetStatus("İndeksleme bitti.");
+                    if (stt == "ok" && mode == "update") SetStatus(UpdateText(LastDoneStats));
                     LastExcludedRemoved = ev.ContainsKey("excluded_removed") && ev["excluded_removed"] != null ? Convert.ToInt32(ev["excluded_removed"]) : -1;
                     if (mode == "status" && purgeAsked)
                     {
@@ -947,12 +1099,12 @@ namespace HatirMail
                 s.Proc.Threads == settings.Threads && s.Proc.MemoryLimitMb == settings.MemoryLimitMb) { warm = s.Proc; ArmKeep(); }
             else if (s.KeepProcess) s.Proc.Close();
             progress.Visible = false; progress.Style = ProgressBarStyle.Blocks; progress.Value = 0;
-            if (s.Mode == "index")
-                phase.Text = reason == "ok" ? "İndeksleme bitti: " + DateTime.Now.ToString("dd.MM.yyyy HH:mm", TR)
-                           : (reason == "cancelled" ? "İndeksleme durduruldu." : "İndeksleme durdu (" + ReasonText(reason) + ").") +
-                             " Kaldığı yerden sürdürmek için İndekslemeyi başlat'a basın.";
+            if (IndexLike(s.Mode))
+                phase.Text = reason == "ok" ? ModeName(s.Mode) + " bitti: " + DateTime.Now.ToString("dd.MM.yyyy HH:mm", TR)
+                           : (reason == "cancelled" ? ModeName(s.Mode) + " durduruldu." : ModeName(s.Mode) + " durdu (" + ReasonText(reason) + ").") +
+                             (s.Mode == "update" ? " Kaldığı yerden sürdürmek için Güncelle'ye basın." : " Kaldığı yerden sürdürmek için İndekslemeyi başlat'a basın.");
             if (s.Mode != "status" && reason != "ok" && reason != "cancelled" && !status.Text.Contains("tamamlanamadı"))
-                SetStatus((s.Mode == "index" ? "İndeksleme" : "Arama") + " durdu: " + ReasonText(reason) + ". Arama işlemi kapatıldı.");
+                SetStatus(ModeName(s.Mode) + " durdu: " + ReasonText(reason) + ". Arama işlemi kapatıldı.");
             UpdateButtons(); UpdateSummary();
             var h = SessionFinished; if (h != null) h(s.Mode, reason);
             var next = queued; queued = null;
@@ -971,7 +1123,7 @@ namespace HatirMail
             int done = Convert.ToInt32(ev["done"]), total = Convert.ToInt32(ev["total"]);
             LastPhase = ph; LastDone = done; LastTotal = total;
             // Time left only for an index run: a search stops its indexing at the time limit anyway.
-            string eta = mode == "index" && ev.ContainsKey("eta_s") && ev["eta_s"] != null ? " – bu aşamada kalan " + Duration(Convert.ToDouble(ev["eta_s"])) : "";
+            string eta = IndexLike(mode) && ev.ContainsKey("eta_s") && ev["eta_s"] != null ? " – bu aşamada kalan " + Duration(Convert.ToDouble(ev["eta_s"])) : "";
             if (total > 0) { progress.Style = ProgressBarStyle.Blocks; progress.Maximum = total; progress.Value = Math.Min(done, total); }
             string text = null;
             switch (ph)
@@ -991,8 +1143,21 @@ namespace HatirMail
                     break;
             }
             if (text == null) return;
-            if (mode == "index") phase.Text = text;
+            if (IndexLike(mode)) phase.Text = text;
             SetStatus(text + (mode == "search" && ph != "scan" ? ". Durdurursanız kaldığı yerden sürer." : ""));
+        }
+
+        /// <summary>The result of "Güncelle" from done.stats: new and changed mails read, mails that left the index, new mails
+        /// of never-indexed folders that were not read.</summary>
+        static string UpdateText(Dictionary<string, object> st)
+        {
+            Func<string, int> n = k => st != null && st.ContainsKey(k) && st[k] != null ? Convert.ToInt32(st[k]) : 0;
+            int added = n("new"), changed = n("changed") + n("same"), removed = n("removed"), skipped = n("unsynced_skipped");
+            string text = added + changed + removed == 0 ? "İndeks güncel: son indekslemeden sonra yeni, değişen ya da silinen posta yok."
+                : string.Format(TR, "Güncelleme bitti: {0:N0} yeni, {1:N0} değişen posta işlendi; {2:N0} posta indeksten çıktı (silinmiş ya da taşınmış).", added, changed, removed);
+            if (skipped > 0)
+                text += string.Format(TR, " {0:N0} posta hiç tam indekslenmemiş klasörlerde; onlar için İndekslemeyi başlat'a basın.", skipped);
+            return text;
         }
 
         static string Duration(double sec)
@@ -1022,10 +1187,23 @@ namespace HatirMail
             list.EndUpdate();
             FitColumns(list); // a vertical scroll bar makes the list narrower
             var dw = ev.ContainsKey("date_windows") ? ((ArrayList)ev["date_windows"]).Cast<string>().ToList() : new List<string>();
-            string dates = dw.Count > 0 ? " Tarih aralığı: " + string.Join("; ", dw) + "." : "";
+            string dates = (dw.Count > 0 ? " Tarih aralığı: " + string.Join("; ", dw) + "." : "") + filterNote; // filterNote: the active filters
             bool semantic = ev.ContainsKey("semantic") && (bool)ev["semantic"];
             LastSemantic = semantic;
-            if (stage == "keyword")
+            if (ev.ContainsKey("similar_to")) // "Benzerlerini bul"
+            {
+                var to = Dict(ev, "similar_to");
+                string subj = to != null ? "\"" + (to["subject"] as string) + "\"" : "";
+                if (to == null)
+                    SetStatus("Bu e-posta henüz indekste yok. İndeks sekmesinde Güncelle'ye basın, sonra yeniden deneyin.");
+                else if (!true.Equals(to["embedded"]))
+                    SetStatus("Bu e-postanın anlam indeksi henüz yok. İndeks sekmesinde Güncelle'ye basın, sonra yeniden deneyin.");
+                else if (results.Count == 0)
+                    SetStatus("Benzer e-posta bulunamadı: " + subj + "." + filterNote);
+                else
+                    SetStatus(results.Count + " benzer e-posta: " + subj + ". Gri satırlar yalnız zayıf benzerliktir." + filterNote);
+            }
+            else if (stage == "keyword")
                 SetStatus((results.Count > 0 ? "Kelime eşleşmeleri gösteriliyor." : "Tam kelime eşleşmesi yok.") + " Anlamsal arama sürüyor…" + dates);
             else if (!semantic)
                 SetStatus((results.Count > 0 ? results.Count + " kelime eşleşmesi." : "Kelime eşleşmesi yok.") +
@@ -1079,6 +1257,7 @@ namespace HatirMail
         /// <summary>Bars, scope line and status bar for the checked folders (from the last coverage data).</summary>
         void UpdateSummary()
         {
+            RefreshFolderFilter(); // the folder filter lists the checked folders
             int total = 0, read = 0, indexed = 0, emb = 0, attT = 0, attD = 0, unknown = 0, sel = 0;
             foreach (ListViewItem it in folderList.Items)
             {
@@ -1098,6 +1277,11 @@ namespace HatirMail
             var st = storeBox.SelectedItem as StoreItem;
             string scope = string.Format(TR, "Aranacak: {0} – {1} klasör, {2:N0} posta.", st != null ? st.Name : "?", sel, total);
             if (sel == 0) { scopeLine.Text = "Klasör seçilmedi. İndeks sekmesinden klasör seçin."; summary.Text = ""; }
+            else if (session != null && session.Mode == "update")
+            {
+                scopeLine.Text = "Güncelleme sürüyor: yeni ve değişen postalar işleniyor. Ara'ya basarsanız arama güncelleme bitince başlar.";
+                summary.Text = "İndeks: anlam " + sem;
+            }
             else if (session != null && session.Mode == "index")
             {
                 scopeLine.Text = string.Format(TR, "İndeksleme sürüyor (anlam {0}). Ara'ya basarsanız indeksleme durur; sonra kaldığı yerden sürdürebilirsiniz.", sem);
@@ -1265,9 +1449,9 @@ namespace HatirMail
         // The worker never outlives the window. During an index run the user confirms first (or minimizes the window).
         void OnClosing(object sender, FormClosingEventArgs e)
         {
-            if (!allowClose && e.CloseReason == CloseReason.UserClosing && session != null && session.Mode == "index" &&
-                MessageBox.Show(this, "İndeksleme sürüyor. Pencere kapanırsa indeksleme durur (yapılan iş kaydedilir).\n\n" +
-                                "Kapatılsın mı? İndekslemenin sürmesi için Hayır'a basın ve pencereyi simge durumuna küçültün.",
+            if (!allowClose && e.CloseReason == CloseReason.UserClosing && session != null && IndexLike(session.Mode) &&
+                MessageBox.Show(this, ModeName(session.Mode) + " sürüyor. Pencere kapanırsa " + ModeName(session.Mode).ToLower(TR) + " durur (yapılan iş kaydedilir).\n\n" +
+                                "Kapatılsın mı? İşin sürmesi için Hayır'a basın ve pencereyi simge durumuna küçültün.",
                                 "HatırMail", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
             {
                 e.Cancel = true;
@@ -1298,6 +1482,16 @@ namespace HatirMail
         public bool ModelLoaded { get { return modelSeen; } }
         public string SessionMode { get { return session != null ? session.Mode : null; } }
         public string LastPhase; public int LastDone, LastTotal; public bool LastSemantic; // test hooks: last progress / results
+        public Dictionary<string, object> LastDoneStats;                                  // test hook: stats of the last done
+        public ComboBox[] FilterBoxes { get { return new[] { senderBox, recipientBox, folderBox }; } } // test hook
+        public void SetFolderChecked(string id, bool on)                                 // test hook: a click on the İndeks list
+        {
+            foreach (ListViewItem it in folderList.Items) if (((FolderInfo)it.Tag).Id == id) it.Checked = on;
+            UpdateSummary();
+        }
+        public string PhaseText { get { return phase.Text; } }                            // test hook
+        public List<string> ResultWhy(int i) { return ((ArrayList)((Dictionary<string, object>)list.Items[i].Tag)["why"]).Cast<string>().ToList(); } // test hook
+        public string ResultConfidence(int i) { return ((Dictionary<string, object>)list.Items[i].Tag)["confidence"] as string; }             // test hook
         public Panel Root { get { return root; } }
         public Size DesignClientSize { get { return new Size(S(1024), S(681)); } } // client area of the default window
         public Size MinClientSize { get { return new Size(S(804), S(521)); } }
@@ -1480,6 +1674,10 @@ namespace HatirMail
         public int StartedPid { get { return Proc != null ? Proc.StartedPid : 0; } }
         public bool KeepProcess; // the worker stays for the next session after a good end
         public List<string> Exclude = new List<string>(); // folder ids excluded in Ayarlar: the worker deletes them from the index
+        public Dictionary<string, object> Filters;        // Ara filters (sender, recipient keys); null = none
+        public string SimilarEid;                         // mode similar: the mail of "Benzerlerini bul"
+        /// <summary>status and similar: no scan, no mail reading, no attachment folder (the worker only reads its index).</summary>
+        public bool Light { get { return Mode == "status" || Mode == "similar"; } }
 
         public WorkerSession(SearchForm form, IMailSource source, Settings settings, string mode, string storeId, string storeName,
                              List<FolderInfo> scope, string query, bool preload = false)
@@ -1504,7 +1702,7 @@ namespace HatirMail
             stall.Interval = 30000;
             stall.Tick += (s, e) => { if (clock.ElapsedMilliseconds - Interlocked.Read(ref lastEventMs) > StallS * 1000L) Kill("yanıt yok"); };
             stall.Start();
-            if (settings.Attachments && Mode != "status")
+            if (settings.Attachments && !Light)
             {
                 // Saved attachments live here only until the worker has read them (the worker deletes each file).
                 // A folder left by a crash is deleted now and at the end of this session.
@@ -1515,10 +1713,12 @@ namespace HatirMail
             var begin = new Dictionary<string, object> {
                 {"op", "begin"}, {"session", proc.Token}, {"mode", Mode}, {"query", query}, {"now", DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:ss")},
                 {"top_k", 10}, {"idle_timeout_s", settings.IdleTimeoutS}, {"keep_alive_s", keepAliveS}, {"preload", Preload && keepAliveS > 0},
-                {"attachments", Mode == "status" ? settings.Attachments : attDir != null}, {"att_dir", attDir},
+                {"attachments", Light ? settings.Attachments : attDir != null}, {"att_dir", attDir},
                 {"store", new Dictionary<string, object> { {"id", storeId}, {"name", storeName} }},
                 {"folders", scope.Select(f => new Dictionary<string, object> { {"id", f.Id}, {"path", f.Path} }).ToList()}, {"exclude", Exclude} };
             if (Mode == "search") begin["index_budget_s"] = settings.SearchIndexBudgetS;
+            if (Filters != null) begin["filters"] = Filters;
+            if (SimilarEid != null) begin["similar_eid"] = SimilarEid;
             Send(begin);
         }
 
@@ -1536,7 +1736,7 @@ namespace HatirMail
             Interlocked.Exchange(ref lastEventMs, clock.ElapsedMilliseconds);
             form.OnEvent(Mode, ev);
             string name = ev["ev"] as string;
-            if (name == "hello" && Mode != "status") SendManifests();
+            if (name == "hello" && !Light) SendManifests();
             else if (name == "need") SendItems(((ArrayList)ev["eids"]).Cast<string>().ToList());
             else if (name == "need_att") SaveAttachments((ArrayList)ev["atts"]);
             else if (name == "done")

@@ -16,10 +16,17 @@
 //          --exclude FOLDER_ID  the folder is excluded in Ayarlar (this run only; settings.json does not change): the status
 //                               check at the window open must delete its mails from the index and the list must not show it
 //          --expect-removed N   with --exclude: the number of deleted mails (default: more than 0)
+//          --update EID         with --index: the mail EID is not in Outlook during the full index (it comes later). Then
+//                               "Güncelle" must read only this mail (1 new, in less time than the full index), a second
+//                               "Güncelle" must find nothing ("İndeks güncel"), and the search must find EID
 //        HatirMail.TestHost.exe <corpus.json> <hatirmail_home> --layout-check [screenshot_dir]
 //        HatirMail.TestHost.exe - <hatirmail_home> --history-check   (recent/saved searches file only, no window: runs on mono)
 //        HatirMail.TestHost.exe <att_corpus.json> <hatirmail_home> --attach-check   ("Eki aç" file rules, no window: runs on mono)
 //        HatirMail.TestHost.exe - <hatirmail_home> --exclude-check   ("Klasörleri hariç tut" rules, no window: runs on mono)
+//        HatirMail.TestHost.exe - <hatirmail_home> --ribbon-check    ("Benzerlerini bul" menu XML and mail reference, no window: runs on mono)
+//        HatirMail.TestHost.exe <corpus.json> <hatirmail_home> --similar EID EXPECTED_EID
+//                             full index, then "Benzerlerini bul" on EID: no model load, EXPECTED_EID first and "yüksek", EID not
+//                             in the results; then the same with the Gönderen filter of EID (only that sender)
 // Exit code 0 = pass. Prints only event names, counts, ids and timings (no mail text).
 using System;
 using System.Collections;
@@ -37,6 +44,18 @@ using System.Windows.Forms;
 
 namespace HatirMail
 {
+    // Stand-ins for the Outlook Selection, mail and folder (--ribbon-check). Public top-level types: the late binding in
+    // HatirMail.dll (Connect.MailRef) sees only public members of public types of another assembly.
+    public class FakeFolder { public string EntryID { get; set; } public string StoreID { get; set; } }
+    public class FakeMail { public string EntryID { get; set; } public FakeFolder Parent { get; set; } }
+    public class FakeSelection
+    {
+        readonly object[] items;
+        public FakeSelection(params object[] items) { this.items = items; }
+        public int Count { get { return items.Length; } }
+        public object this[int i] { get { return items[i - 1]; } } // 1-based, as Outlook
+    }
+
     static class TestHost
     {
         [STAThread]
@@ -55,6 +74,8 @@ namespace HatirMail
             if (args[2] == "--history-check") return HistoryCheck(settings) ? 0 : 1;
             if (args[2] == "--attach-check") return AttachCheck(args[0], settings) ? 0 : 1;
             if (args[2] == "--exclude-check") return ExcludeCheck(settings) ? 0 : 1;
+            if (args[2] == "--ribbon-check") return RibbonCheck() ? 0 : 1;
+            if (args[2] == "--similar") return SimilarRun(new JsonSource(args[0]), settings, args[3], args[4]);
             if (args[2] == "--layout-check") return LayoutCheck(new JsonSource(args[0]), settings, args.Length > 3 ? args[3] : null);
             string expected = args.Length > 3 && !args[3].StartsWith("--") ? args[3] : null;
             bool index = args.Contains("--index"), expectKeyword = args.Contains("--expect-keyword"), expectIncomplete = args.Contains("--expect-incomplete");
@@ -68,7 +89,15 @@ namespace HatirMail
             int expectRemoved = Opt(args, "--expect-removed", -1);
             bool excludeOk = excludeId == null;
             if (excludeId != null) settings.ExcludedFolders[src.Stores()[0].Key] = new List<string> { excludeId }; // in memory only
-            var form = new SearchForm(new SlowSource(src, Opt(args, "--read-delay-ms", 0)), settings) { ShowInTaskbar = false, WindowState = FormWindowState.Minimized };
+            var slow = new SlowSource(src, Opt(args, "--read-delay-ms", 0));
+            string updateEid = Array.IndexOf(args, "--update") > 0 ? args[Array.IndexOf(args, "--update") + 1] : null;
+            if (updateEid != null) slow.Hidden.Add(updateEid); // the mail comes after the full index
+            long indexMs = 0, updateMs = 0;
+            int updates = 0;
+            bool updateOk = updateEid == null;
+            SearchForm form = null;
+            Func<string, int> stat = k => form.LastDoneStats != null && form.LastDoneStats.ContainsKey(k) ? Convert.ToInt32(form.LastDoneStats[k]) : -1;
+            form = new SearchForm(slow, settings) { ShowInTaskbar = false, WindowState = FormWindowState.Minimized };
             var launched = new List<string>();
             form.Launch = p => launched.Add(p); // no program starts in the test: record the path
             int code = 1, searches = 0;
@@ -149,8 +178,25 @@ namespace HatirMail
                 {
                     // The full index is done: now the search, as the user does after "İndekslemeyi başlat".
                     if (reason != "ok" || !form.IndexComplete) { Console.WriteLine("FAIL index " + reason); form.Shutdown(); return; }
+                    indexMs = sw.ElapsedMilliseconds;
                     sw.Restart();
+                    if (updateEid != null) { slow.Hidden.Clear(); form.StartUpdate(); return; } // the mail comes in
                     form.SetQuery(args[2]); form.StartSearch();
+                    return;
+                }
+                if (mode == "update")
+                {
+                    // 1st "Güncelle": the new mail only. 2nd: nothing ("İndeks güncel"). Then the search.
+                    bool ok = reason == "ok" && form.IndexComplete && stat("unsynced_skipped") == 0 && stat("removed") == 0 &&
+                              (++updates == 1 ? stat("need") == 1 && stat("new") == 1 && form.StatusText.StartsWith("Güncelleme bitti: 1 yeni")
+                                              : stat("need") == 0 && form.StatusText.StartsWith("İndeks güncel") && !form.ModelLoaded);
+                    if (updates == 1) updateMs = sw.ElapsedMilliseconds;
+                    Console.WriteLine("update n={0} ms={1} need={2} new={3} skipped={4} complete={5} phase_ok={6} -> {7}", updates, sw.ElapsedMilliseconds,
+                                      stat("need"), stat("new"), stat("unsynced_skipped"), form.IndexComplete, form.PhaseText.StartsWith("Güncelleme bitti"), ok ? "ok" : "FAIL");
+                    updateOk = (updates == 1 || updateOk) && ok && form.PhaseText.StartsWith("Güncelleme bitti");
+                    sw.Restart();
+                    if (updates == 1) { form.BeginInvoke((Action)form.StartUpdate); return; }
+                    form.BeginInvoke((Action)(() => { form.SetQuery(args[2]); form.StartSearch(); }));
                     return;
                 }
                 bool complete = form.IndexComplete; // before Report closes the window
@@ -176,6 +222,13 @@ namespace HatirMail
                 if (expectIncomplete && complete) { Console.WriteLine("FAIL: index complete after a time-limited search"); code = 1; }
                 if (maxMs >= 0 && ms > maxMs) { Console.WriteLine("FAIL: search took " + ms + " ms, limit " + maxMs); code = 1; }
                 if (!excludeOk) { Console.WriteLine("FAIL: excluded folder"); code = 1; }
+                if (updateEid != null)
+                {
+                    // Güncelle read one mail: it must take less time than the full index (both with the model load).
+                    bool fast = updates == 2 && updateMs < indexMs;
+                    Console.WriteLine("update_check full_index_ms={0} update_ms={1} updates={2} -> {3}", indexMs, updateMs, updates, updateOk && fast ? "ok" : "FAIL");
+                    if (!updateOk || !fast) { Console.WriteLine("FAIL: Güncelle"); code = 1; }
+                }
                 if (openAtt != null)
                 {
                     // Report closed the window: the copy is gone.
@@ -194,6 +247,80 @@ namespace HatirMail
             {
                 // No store/folder list on an empty home: start at once (no status check runs then).
                 if (!File.Exists(settings.Python)) startMain();
+            };
+            Application.Run(form);
+            return code;
+        }
+
+        // "Benzerlerini bul" without Outlook: the ribbon XML (well-formed, the menu of a mail, the callback exists) and
+        // Connect.MailRef with stand-ins for a Selection and a mail (late binding through dynamic, as with Outlook).
+        static bool RibbonCheck()
+        {
+            bool ok = true;
+            Action<string, bool> check = (name, pass) => { Console.WriteLine("ribbon_" + name + "=" + (pass ? "ok" : "FAIL")); ok &= pass; };
+            try
+            {
+                var x = System.Xml.Linq.XDocument.Parse(Connect.CustomUI);
+                var ns = x.Root.Name.Namespace;
+                var menu = x.Descendants(ns + "contextMenu").SingleOrDefault();
+                var btn = menu == null ? null : menu.Elements(ns + "button").SingleOrDefault();
+                check("xml", menu != null && (string)menu.Attribute("idMso") == "ContextMenuMailItem" && btn != null &&
+                             (string)btn.Attribute("label") == "Benzerlerini bul" && (string)btn.Attribute("onAction") == "OnSimilar" &&
+                             typeof(Connect).GetMethod("OnSimilar") != null && typeof(Connect).GetMethod("OnSearch") != null &&
+                             new Connect().GetCustomUI("Microsoft.Outlook.Explorer") == Connect.CustomUI && new Connect().GetCustomUI("Microsoft.Outlook.Mail.Read") == null);
+                var mail = new FakeMail { EntryID = "E1", Parent = new FakeFolder { EntryID = "F1", StoreID = "S1" } };
+                string eid, sid, fid;
+                Connect.MailRef(new FakeSelection(mail), out eid, out sid, out fid);
+                bool sel = eid == "E1" && sid == "S1" && fid == "F1";
+                Connect.MailRef(mail, out eid, out sid, out fid);
+                check("mail_ref", sel && eid == "E1" && sid == "S1" && fid == "F1");
+                bool threw = false;
+                try { Connect.MailRef(new object(), out eid, out sid, out fid); } catch { threw = true; }
+                check("no_mail", threw);
+            }
+            catch (Exception ex) { Console.WriteLine("ribbon_check exception " + ex.GetType().Name + ": " + ex.Message); ok = false; }
+            Console.WriteLine(ok ? "PASS" : "FAIL");
+            return ok;
+        }
+
+        // "Benzerlerini bul" with the real window and worker (JsonSource, no Outlook): full index, then FindSimilar (the code
+        // behind the menu command) on eid; then with the Gönderen filter of eid. No model load in the similar sessions.
+        static int SimilarRun(JsonSource src, Settings settings, string eid, string expected)
+        {
+            var form = new SearchForm(src, settings) { ShowInTaskbar = false, WindowState = FormWindowState.Minimized };
+            int code = 1, step = 0;
+            string storeId = src.Stores()[0].Key, sender = null;
+            var sw = Stopwatch.StartNew();
+            form.SessionFinished += (mode, reason) =>
+            {
+                Console.WriteLine("session_end mode=" + mode + " reason=" + reason + " ms=" + sw.ElapsedMilliseconds);
+                if (reason != "ok") { Console.WriteLine("FAIL " + mode + " " + reason); form.Shutdown(); return; }
+                if (mode == "status" && step == 0) { step = 1; form.StartIndex(); return; }
+                if (mode == "index") { step = 2; sw.Restart(); form.BeginInvoke((Action)(() => form.FindSimilar(eid, storeId, null))); return; }
+                if (mode != "similar") return;
+                var eids = Enumerable.Range(0, form.ResultCount).Select(form.ResultEid).ToList();
+                if (step == 2)
+                {
+                    bool ok = eids.Count > 0 && eids[0] == expected && !eids.Contains(eid) && form.ResultConfidence(0) == "yüksek" &&
+                              form.ResultWhy(0)[0].StartsWith("benzerlik ") && !form.ModelLoaded && form.StatusText.Contains("benzer e-posta");
+                    Console.WriteLine("similar results={0} first={1} conf={2} model_loaded={3} ms={4} -> {5}", eids.Count, eids.FirstOrDefault(),
+                                      eids.Count > 0 ? form.ResultConfidence(0) : "-", form.ModelLoaded, sw.ElapsedMilliseconds, ok ? "ok" : "FAIL");
+                    if (!ok) { form.Shutdown(); return; }
+                    // The Gönderen filter of eid: every result has the sender of eid.
+                    sender = src.Read(eid, storeId, "")["sender"] as string;
+                    var box = form.FilterBoxes[0];
+                    int i = box.Items.Cast<object>().ToList().FindIndex(o => o.ToString().StartsWith(sender + " <"));
+                    if (i < 1) { Console.WriteLine("FAIL: sender not in the filter list"); form.Shutdown(); return; }
+                    box.SelectedIndex = i;
+                    step = 3; sw.Restart();
+                    form.BeginInvoke((Action)(() => form.FindSimilar(eid, storeId, null)));
+                    return;
+                }
+                bool fok = eids.Count > 0 && !eids.Contains(eid) && eids.All(e => (src.Read(e, storeId, "")["sender"] as string) == sender) && form.StatusText.Contains("Filtre: gönderen");
+                Console.WriteLine("similar_filtered results={0} same_sender={1} -> {2}", eids.Count, fok, fok ? "ok" : "FAIL");
+                code = fok ? 0 : 1;
+                Console.WriteLine(code == 0 ? "PASS" : "FAIL");
+                form.Shutdown();
             };
             Application.Run(form);
             return code;
@@ -249,14 +376,16 @@ namespace HatirMail
             Console.WriteLine(ok ? "PASS" : "FAIL");
         }
 
-        /// <summary>A mail source with a slow Read (a slow Outlook or a large mailbox): every other call is passed on.</summary>
+        /// <summary>A mail source with a slow Read (a slow Outlook or a large mailbox) and mails that are not there yet (Hidden:
+        /// not in the folder lists, "--update"): every other call is passed on.</summary>
         class SlowSource : IMailSource
         {
             readonly IMailSource s; readonly int delay;
+            public readonly HashSet<string> Hidden = new HashSet<string>();
             public SlowSource(IMailSource s, int delay) { this.s = s; this.delay = delay; }
             public List<KeyValuePair<string, string>> Stores() { return s.Stores(); }
             public List<FolderInfo> Folders(string storeId) { return s.Folders(storeId); }
-            public IEnumerable<object[]> Manifest(FolderInfo f, Func<bool> cancelled) { return s.Manifest(f, cancelled); }
+            public IEnumerable<object[]> Manifest(FolderInfo f, Func<bool> cancelled) { return s.Manifest(f, cancelled).Where(r => !Hidden.Contains((string)r[0])); }
             public Dictionary<string, object> Read(string eid, string storeId, string folderId)
             {
                 if (delay > 0) System.Threading.Thread.Sleep(delay);
@@ -290,6 +419,7 @@ namespace HatirMail
                 form.Feed("index", Coverage(form));
                 form.Feed("index", new Dictionary<string, object> { {"ev", "progress"}, {"phase", "embed"}, {"done", 1234}, {"total", 4321}, {"rate", 0.6}, {"eta_s", 5148} });
                 form.Feed("search", Results());
+                form.Feed("status", Facets(false)); // filter lists with long names (layout)
                 form.SetQuery("geçen ay Ahmet'ten gelen kargo faturası");
                 // The window is limited to this 1024x768 screen; its root panel is not (a child window): lay it out at
                 // the client size of the default window and of the minimum window at 192 DPI.
@@ -323,6 +453,7 @@ namespace HatirMail
                 Console.WriteLine("client_sizes default={0} min={1} root={2}", form.DesignClientSize, form.MinClientSize, root.Size);
                 Console.WriteLine("preview_marked_chars=" + form.PreviewMarkedChars);
                 ok &= form.PreviewMarkedChars > 0;
+                ok &= FilterUiCheck(form);
                 ok &= HistoryUiCheck(form, settings, shotDir);
                 ok &= IndexDeleteCheck(form, settings); // it clears the results
                 ok &= ExcludeUiCheck(form, settings, src.Stores()[0].Key, shotDir);
@@ -573,7 +704,7 @@ namespace HatirMail
             // Name dialog: layout at 2x, Kaydet off for an empty name.
             using (var d = new SearchForm.NameDialog(form, "Aylık kargo") { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) })
             {
-                d.Show(form); Application.DoEvents();
+                d.Show(); Application.DoEvents(); // no owner: Show(owner) needs an interactive session (the SSH session on 2.19 is not)
                 bool fits = Check(d, "name-dialog");
                 if (shotDir != null) Shot(d.Body, Path.Combine(shotDir, "ui-name-dialog.png"));
                 var okBtn = SearchForm.AllControls(d).OfType<Button>().First(x => x.DialogResult == DialogResult.OK);
@@ -611,6 +742,48 @@ namespace HatirMail
             if (File.Exists(file)) File.Delete(file);
             form.ReloadHistory(); Application.DoEvents();
             return ok;
+        }
+
+        // Ara filters (Windows only: WinForms): the lists from done.facets in Turkish order, the chosen value kept by its key
+        // when the lists come again, "(tümü)" when it is gone; the folder list = the checked İndeks folders; FilteredScope
+        // gives the folder scope, the keys for the worker and the status note. The start state comes back.
+        static bool FilterUiCheck(SearchForm form)
+        {
+            bool ok = true;
+            Action<string, bool> check = (name, pass) => { Console.WriteLine("filter_ui_" + name + "=" + (pass ? "ok" : "FAIL")); ok &= pass; };
+            var b = form.FilterBoxes;
+            Func<ComboBox, string[]> texts = x => x.Items.Cast<object>().Select(o => o.ToString()).ToArray();
+            check("lists", texts(b[0]).SequenceEqual(new[] { "(tümü)", "Ahmet Demir <ahmet.demir@hizli-lojistik.example>", "Çağla Öztürk <cagla@x.example>", "Zeynep Arslan <zeynep@x.example>" }) &&
+                           texts(b[1]).SequenceEqual(new[] { "(tümü)", "Furkan Çakır", "Muhasebe Ekibi" }) && b.All(x => x.SelectedIndex == 0) &&
+                           texts(b[2]).Length == form.ListedFolderIds().Count + 1);
+            b[0].SelectedIndex = 3; b[1].SelectedIndex = 1;
+            bool changed = form.StatusText.StartsWith("Filtre değişti");
+            b[2].SelectedIndex = texts(b[2]).ToList().IndexOf("Gelen Kutusu\\Projeler");
+            form.Feed("status", Facets(true)); // the lists come again: Zeynep stays, Furkan Çakır is gone
+            Dictionary<string, object> f; string note;
+            var scope = form.FilteredScope(form.AllFolders, out f, out note);
+            check("kept", changed && b[0].Text == "Zeynep Arslan <zeynep@x.example>" && b[1].SelectedIndex == 0 &&
+                          (string)f["sender"] == "zeynep@x.example" && f["recipient"] == null && scope.Count == 1 && scope[0].Id == "F-PROJ" &&
+                          note == " Filtre: gönderen Zeynep Arslan <zeynep@x.example>, klasör Gelen Kutusu\\Projeler.");
+            form.SetFolderChecked("F-PROJ", false); // not in the scope any more: the folder filter is gone
+            bool gone = b[2].SelectedIndex == 0 && !texts(b[2]).Contains("Gelen Kutusu\\Projeler");
+            form.SetFolderChecked("F-PROJ", true);
+            check("folder_unchecked", gone && texts(b[2]).Contains("Gelen Kutusu\\Projeler") && b[2].SelectedIndex == 0);
+            foreach (var x in b) x.SelectedIndex = 0;
+            form.FilteredScope(form.AllFolders, out f, out note);
+            check("none", note == "" && f["sender"] == null && f["recipient"] == null);
+            return ok;
+        }
+
+        static Dictionary<string, object> Facets(bool second)
+        {
+            Func<object[], ArrayList> row = a => new ArrayList(a);
+            var senders = new ArrayList { row(new object[] { "zeynep@x.example", "Zeynep Arslan", "zeynep@x.example", 4 }),
+                                          row(new object[] { "cagla@x.example", "Çağla Öztürk", "cagla@x.example", 2 }) };
+            if (!second) senders.Insert(0, row(new object[] { "ahmet.demir@hizli-lojistik.example", "Ahmet Demir", "ahmet.demir@hizli-lojistik.example", 9 }));
+            var recips = new ArrayList { row(new object[] { "muhasebe ekibi", "Muhasebe Ekibi", 3 }) };
+            if (!second) recips.Add(row(new object[] { "furkan cakir", "Furkan Çakır", 12 }));
+            return new Dictionary<string, object> { {"ev", "done"}, {"status", "ok"}, {"facets", new Dictionary<string, object> { {"senders", senders}, {"recipients", recips} }} };
         }
 
         // Ayarlar "İndeksi sil". The confirmation dialog is modal: the check calls DeleteIndex (the code behind "Evet").
@@ -721,8 +894,10 @@ namespace HatirMail
             using (var d = new SearchForm.ExcludeDialog(form, "Sentetik Posta (Atlas Örnek)", all, new HashSet<string>())
                            { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) })
             {
-                d.Show(form); Application.DoEvents();
-                bool fits = Check(d, "exclude-dialog");
+                d.Show(); Application.DoEvents(); // no owner: see HistoryUiCheck
+                // Body, not the dialog: the desktop of the SSH session on 2.19 is small, and Windows made the 2x dialog
+                // smaller (client 1030x755 for a 1040x832 body). ponytail: the dialog size itself is not checked here.
+                bool fits = Check(d.Body, "exclude-dialog");
                 d.Box.SetItemChecked(inbox, true);
                 bool sub = d.Box.GetItemChecked(proj);
                 d.Box.SetItemChecked(proj, false); // refused: the checked parent excludes it
@@ -762,8 +937,9 @@ namespace HatirMail
             foreach (var c in SearchForm.AllControls(root).Where(c => c.Visible))
             {
                 n++;
-                // Inside the client area of its parent (and so inside the window): nothing is clipped.
-                var r = c.RectangleToScreen(new Rectangle(Point.Empty, c.Size));
+                // Inside the client area of its parent (and so inside the window): nothing is clipped. Bounds = the full
+                // window of the control (its border included) in the client coordinates of the parent.
+                var r = c.Parent.RectangleToScreen(c.Bounds);
                 var pr = c.Parent.RectangleToScreen(c.Parent.ClientRectangle);
                 if (r.Width > 0 && r.Height > 0 && (!pr.Contains(r) || !rr.Contains(r)))
                 { Console.WriteLine("{0}: outside {1} '{2}' {3} parent={4}", name, c.GetType().Name, Short(c.Text), r, pr); ok = false; }
@@ -771,12 +947,13 @@ namespace HatirMail
                 if (l != null && l.Text.Length > 0)
                 {
                     // Height for the text wrapped at the label width (one line for a label that ends with "…"),
-                    // and the longest word fits the width.
+                    // and the longest word fits the width. A shortcut "&" is not drawn.
+                    string lt = l.UseMnemonic ? l.Text.Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "&") : l.Text;
                     int w = l.ClientSize.Width - l.Padding.Horizontal;
                     int need = (l.AutoEllipsis ? TextRenderer.MeasureText("Ag", l.Font).Height
-                                : TextRenderer.MeasureText(l.Text, l.Font, new Size(Math.Max(1, w), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl).Height)
+                                : TextRenderer.MeasureText(lt, l.Font, new Size(Math.Max(1, w), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl).Height)
                                + l.Padding.Vertical;
-                    int word = TextRenderer.MeasureText(LongestWord(l.Text), l.Font).Width;
+                    int word = TextRenderer.MeasureText(LongestWord(lt), l.Font).Width;
                     if (l.Height < need - 2 || !l.AutoEllipsis && word > w + 2)
                     { Console.WriteLine("{0}: label cut '{1}' size={2} need_h={3} word_w={4}", name, Short(l.Text), l.Size, need, word); ok = false; }
                 }

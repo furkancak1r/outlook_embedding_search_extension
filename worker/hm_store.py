@@ -14,12 +14,12 @@ SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
-CREATE TABLE IF NOT EXISTS folders(id TEXT PRIMARY KEY, path TEXT, total INTEGER, scanned_at REAL);
+CREATE TABLE IF NOT EXISTS folders(id TEXT PRIMARY KEY, path TEXT, total INTEGER, scanned_at REAL, synced_gen INTEGER);
 CREATE TABLE IF NOT EXISTS items(
   rowid INTEGER PRIMARY KEY, entry_id TEXT UNIQUE NOT NULL, folder_id TEXT, msg_class TEXT,
   last_mod TEXT, content_hash TEXT, subject TEXT, sender TEXT, sender_addr TEXT, recipients TEXT,
   sent_at TEXT, attachments TEXT, main_text TEXT, n_chunks INTEGER, embedded INTEGER DEFAULT 0,
-  model_rev TEXT, index_version INTEGER, seen_gen INTEGER DEFAULT 0);
+  model_rev TEXT, index_version INTEGER, seen_gen INTEGER DEFAULT 0, added_gen INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS items_folder ON items(folder_id, seen_gen);
 CREATE TABLE IF NOT EXISTS chunks(
   id INTEGER PRIMARY KEY, item_rowid INTEGER NOT NULL, seq INTEGER, start INTEGER, end INTEGER, text_hash TEXT,
@@ -46,6 +46,9 @@ ITEM_COLS = ["rowid", "entry_id", "folder_id", "msg_class", "subject", "sender",
 # unsupported/too_big: not read.
 ATT_READABLE = ("pending", "extracting", "ok", "empty", "failed")
 ATT_DONE = ("ok", "empty", "failed")
+# "Güncelle" (update mode): the delta = mails inserted or changed after the last finished index run of their folder
+# (folders.synced_gen), or in this session for a folder that was never indexed completely. Parameter: the session gen - 1.
+DELTA = "i.added_gen > coalesce((SELECT synced_gen FROM folders WHERE id=i.folder_id), ?)"
 
 
 # The SQL that _in() builds holds only '?' placeholders (and constant column names): values are always bound.
@@ -59,9 +62,18 @@ class Store:
         self.db = sqlite3.connect(path, timeout=30, isolation_level=None)
         self.db.executescript(SCHEMA)
         self._vocab = None
+        # t = one of the fixed table names below, never input (PRAGMA takes no bound parameter).
+        cols = lambda t: {r[1] for r in self.db.execute(f"PRAGMA table_info({t})")}  # nosemgrep: sqlalchemy-execute-raw-query, formatted-sql-query
         with self.tx():
-            if "src" not in {r[1] for r in self.db.execute("PRAGMA table_info(chunks)")}:  # index version 1
+            if "src" not in cols("chunks"):  # index version 1
                 self.db.execute("ALTER TABLE chunks ADD COLUMN src INTEGER NOT NULL DEFAULT 0")
+            if "added_gen" not in cols("items"):  # files from before "Güncelle": old mails are not in any delta
+                self.db.execute("ALTER TABLE items ADD COLUMN added_gen INTEGER NOT NULL DEFAULT 0")
+            if "synced_gen" not in cols("folders"):
+                # A folder that was read completely counts as indexed at its last scan (gen = ms since 1970).
+                self.db.execute("ALTER TABLE folders ADD COLUMN synced_gen INTEGER")
+                self.db.execute("UPDATE folders SET synced_gen=CAST(scanned_at * 1000 AS INTEGER) WHERE total <="
+                                " (SELECT count(*) FROM items WHERE folder_id=folders.id AND last_mod IS NOT NULL)")
             version = self.meta("index_version")
             if version is None:
                 self.set_meta("index_version", INDEX_VERSION)
@@ -141,11 +153,11 @@ class Store:
             self.delete_item(old[0])
         rowid = self.db.execute(
             "INSERT INTO items(entry_id, folder_id, msg_class, last_mod, content_hash, subject, sender, sender_addr,"
-            " recipients, sent_at, attachments, main_text, n_chunks, embedded, model_rev, index_version, seen_gen)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)",
+            " recipients, sent_at, attachments, main_text, n_chunks, embedded, model_rev, index_version, seen_gen, added_gen)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)",
             (rec["entry_id"], rec["folder_id"], rec["msg_class"], rec["last_mod"], rec["content_hash"], rec["subject"],
              rec["sender"], rec["sender_addr"], rec["recipients"], rec["sent_at"], rec["attachments"],
-             rec["main_text"], len(spans), model_rev, INDEX_VERSION, gen)).lastrowid
+             rec["main_text"], len(spans), model_rev, INDEX_VERSION, gen, gen)).lastrowid
         self.db.execute("INSERT INTO fts(rowid, subject, people, body, quoted, attach) VALUES(?,?,?,?,?,?)",
                         (rowid, *fts_fields))
         self.db.executemany("INSERT INTO chunks(item_rowid, seq, start, end, text_hash) VALUES(?,?,?,?,?)",
@@ -198,12 +210,13 @@ class Store:
                         " 'failed', '' FROM atts WHERE state='extracting' AND file_hash IS NOT NULL")
         return self.db.execute("UPDATE atts SET state='failed' WHERE state='extracting'").rowcount
 
-    def pending_atts(self, folder_ids):
-        """[(item_rowid, entry_id, idx, name, kind)] to read, newest mails first."""
+    def pending_atts(self, folder_ids, since=None):
+        """[(item_rowid, entry_id, idx, name, kind)] to read, newest mails first. since: only the delta (DELTA)."""
+        delta, args = (" AND " + DELTA, [since]) if since is not None else ("", [])
         return self.db.execute(
             "SELECT a.item_rowid, i.entry_id, a.idx, a.name, a.kind FROM atts a JOIN items i ON i.rowid=a.item_rowid"
-            f" WHERE a.state='pending' AND i.folder_id IN ({_in(len(folder_ids))}) ORDER BY i.sent_at DESC, a.idx",
-            list(folder_ids)).fetchall()
+            f" WHERE a.state='pending' AND i.folder_id IN ({_in(len(folder_ids))}){delta} ORDER BY i.sent_at DESC, a.idx",
+            [*folder_ids, *args]).fetchall()
 
     def set_att(self, rowid, idx, state, file_hash=None):
         self.db.execute("UPDATE atts SET state=?, file_hash=? WHERE item_rowid=? AND idx=?", (state, file_hash, rowid, idx))
@@ -236,10 +249,12 @@ class Store:
         self._vocab = None
 
     # -- embeddings ---------------------------------------------------------------------------
-    def pending(self, folder_ids):
+    def pending(self, folder_ids, since=None):
+        """Mails without all their vectors, newest first. since: only the delta (DELTA)."""
+        delta, args = (" AND " + DELTA, [since]) if since is not None else ("", [])
         return self.db.execute(
-            f"SELECT rowid, subject, sender, attachments, main_text FROM items WHERE embedded=0"
-            f" AND folder_id IN ({_in(len(folder_ids))}) ORDER BY sent_at DESC", list(folder_ids)).fetchall()
+            f"SELECT rowid, subject, sender, attachments, main_text FROM items i WHERE embedded=0"
+            f" AND folder_id IN ({_in(len(folder_ids))}){delta} ORDER BY sent_at DESC", [*folder_ids, *args]).fetchall()
 
     def chunk_rows(self, rowid):
         """[(src, start, end, text_hash)] in chunk order."""
@@ -309,6 +324,14 @@ class Store:
         except sqlite3.OperationalError:
             return set()
 
+    def people(self, folder_ids=None):
+        """[(rowid, sender, sender_addr, recipients)] of the folder scope (None: the whole file)."""
+        if folder_ids is None:
+            return self.db.execute("SELECT rowid, sender, sender_addr, recipients FROM items").fetchall()
+        return self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
+            f"SELECT rowid, sender, sender_addr, recipients FROM items WHERE folder_id IN ({_in(len(folder_ids))})",
+            list(folder_ids)).fetchall()
+
     def scope_rowids(self, folder_ids):
         return {r for (r,) in self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
             f"SELECT rowid FROM items WHERE folder_id IN ({_in(len(folder_ids))})", list(folder_ids))}
@@ -324,8 +347,19 @@ class Store:
 
     # -- coverage -----------------------------------------------------------------------------
     def set_folder(self, fid, path, total):
-        self.db.execute("INSERT OR REPLACE INTO folders(id, path, total, scanned_at) VALUES(?,?,?,?)",
+        """Scan result of a folder. Keeps synced_gen (an upsert, not a replace: a search scan is not an index run)."""
+        self.db.execute("INSERT INTO folders(id, path, total, scanned_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET"
+                        " path=excluded.path, total=excluded.total, scanned_at=excluded.scanned_at",
                         (fid, path, total, time.time()))
+
+    def set_synced(self, folder_ids, gen):
+        """An index run read every mail of these folders: "Güncelle" processes only what comes after gen."""
+        self.db.executemany("UPDATE folders SET synced_gen=? WHERE id=?", [(gen, f) for f in folder_ids])
+
+    def synced(self, folder_ids):
+        """The folders that an index run read completely at least once."""
+        return {f for (f,) in self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
+            f"SELECT id FROM folders WHERE synced_gen IS NOT NULL AND id IN ({_in(len(folder_ids))})", list(folder_ids))}
 
     def coverage(self, folder_ids, atts=True):
         """Index state per folder (in folder_ids order) and in total. total: searchable mails in the last scan

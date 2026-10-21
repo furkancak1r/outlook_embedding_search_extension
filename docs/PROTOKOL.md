@@ -4,6 +4,8 @@ The attachment messages (8a–8c) are optional: an add-in without `attachments` 
 `mode` is optional: without it the worker runs a search without a time limit (the behavior of the first version).
 `keep_alive_s` and `preload` are optional: without them the process runs one session and exits.
 `exclude` is optional: without it no folder is deleted from the index.
+`filters` is optional: without it the search is not narrowed. Modes `update` and `similar` are new; an add-in that does not
+send them gets the same behavior as before. `done.facets` and `results.similar_to` are additive fields.
 
 The add-in starts `python.exe -I -B -X utf8 hm_worker.py --data <dir> --model <dir> --threads N` with the
 environment variable `HM_SESSION=<48 hex chars>`. Both sides send one UTF-8 JSON object per line on the
@@ -14,8 +16,29 @@ child's stdin (add-in → worker, key `op`) and stdout (worker → add-in, key `
 | Mode | Started by | What it does |
 |---|---|---|
 | `search` | "Ara" | Scan, read new mails, keyword results, attachments + embedding (time-limited by `index_budget_s`), final results |
-| `index` | "İndekslemeyi başlat" (İndeks tab) | Scan, read, attachments, embedding without a time limit. No query, no results |
+| `index` | "İndekslemeyi başlat" (İndeks tab) | Scan, read, attachments, embedding without a time limit. No query, no results. When the read phase ends without `items_done.stopped`, every listed folder gets `folders.synced_gen` = this session |
+| `update` | "Güncelle" (İndeks tab) | As `index`, but only the changes after the last index run: `need` = changed mails, and new entry ids only in folders with `synced_gen` (others: `stats.unsynced_skipped`). Attachments and embedding only for the delta (mails inserted or changed after `synced_gen` of their folder, or in this session). Deleted and moved-out mails leave the index (the scan, as in every mode). Never moves `synced_gen`. Extra stats: `delta`, `unsynced_skipped` |
 | `status` | Window open, store change, "Durumu yenile", attachment setting changed, excluded folders saved | `hello` with the coverage, then `done`. No scan, no mail reading, no model. An unknown store gets no index file; an index of an older version is upgraded first (as in every mode). The scope can be empty (every folder excluded) |
+| `similar` | "Benzerlerini bul" (Outlook shortcut menu of a mail) | `hello`, one `results` (stage `final`), `done`. `begin.similar_eid` (required, else `done/error` "similar_eid missing"): the mails nearest to this mail by its stored vectors. No scan, no mail reading, no model; an unknown store gets no index file |
+
+## Filters (`begin.filters`, modes `search` and `similar`)
+
+`{"sender": key or null, "recipient": key or null}` (not an object, or a value that is not a string or null: `done/error`
+"bad filters"). Keys are the first values of `done.facets` rows. The worker keeps only the mails of the scope with this
+sender (`fold(sender_addr or sender)`) and with this name among the recipients (To and CC split at `;`, quotes removed,
+folded). Keyword candidates are the best 400 BM25 rows of the file inside the allowed set; the semantic z statistics use
+the unfiltered scope, so the confidence labels do not change. The folder filter of the Ara tab is the scope (`folders`).
+
+`done.facets` (all modes, when the index file is open): `{"senders": [[key, name, address, mails], …], "recipients": [[key,
+name, mails], …]}` of the whole index file, most mails first, at most 1000 each.
+
+## Similar mails (`similar`)
+
+Source vector: the normalized mean of the body chunk vectors of `similar_eid` (all its chunks when it has no body chunk).
+A candidate scores with its best chunk (body or attachment). The source mail is never a result. `confidence`: `yüksek`
+(cos ≥ 0.85), `orta` (≥ 0.80), `zayıf`. `why`: `["benzerlik 0.91"]` (+ `"ekte"` when the best chunk is in an attachment).
+`hl`, `hl_subject` are empty. `results.similar_to`: `null` (the mail is not in the index), `{"eid","subject","embedded":
+false}` (no vectors yet: no results), `{"eid","subject","embedded": true}`.
 
 ## Excluded folders (`begin.exclude`)
 
@@ -50,7 +73,7 @@ no limit. When the scope has no semantic index yet, a time-limited search loads 
 
 | # | Direction | Message | Notes |
 |---|---|---|---|
-| 1 | → | `{"op":"begin","session","mode","query","now","top_k","index_budget_s","idle_timeout_s","keep_alive_s","preload","attachments","att_dir","store":{"id","name"},"folders":[{"id","path"}],"exclude":[folder id…]}` | `session` must equal `HM_SESSION`, else `done/error` and no file is written. Unknown `mode`: `done/error`. `attachments`: true when the add-in can save attachments into `att_dir` (an existing folder) |
+| 1 | → | `{"op":"begin","session","mode","query","now","top_k","index_budget_s","idle_timeout_s","keep_alive_s","preload","attachments","att_dir","store":{"id","name"},"folders":[{"id","path"}],"exclude":[folder id…],"filters":{"sender","recipient"},"similar_eid"}` | `session` must equal `HM_SESSION`, else `done/error` and no file is written. Unknown `mode`: `done/error`. `attachments`: true when the add-in can save attachments into `att_dir` (an existing folder) |
 | 2 | ← | `{"ev":"hello","pid","proto","index_version","model_rev","mode","coverage","model_ready"}` | `status` mode: `done` follows at once. `model_ready`: the model of this process is loaded already (keep-alive) |
 | 3 | → | `{"op":"manifest","folder","items":[[eid, last_mod, class, date], …],"final":bool}` | pages of ≤ 500 rows; `final` closes a folder. Changed mails are marked "to read" at once |
 | 4 | → | `{"op":"scan_done"}` | |
@@ -63,7 +86,7 @@ no limit. When the scope has no semantic index yet, a time-limited search loads 
 | 8c | ← | `{"ev":"progress","phase":"att",…}` | 8a–8c repeat until all pending attachments are read, or cancel/finish/time limit |
 | 9 | ← | `{"ev":"progress","phase":"model"|"embed",…}` | the model loads here (ONNX Runtime, in this process only), unless it is loaded already. `embed` counts model work: distinct chunks without a vector |
 | 10 | ← | `{"ev":"results","stage":"final","results":[…],"coverage","date_windows","terms","semantic","sem_stats"}` | search only: top 10 |
-| 11 | ← | `{"ev":"done","status":"ok"|"cancelled"|"error","mode","coverage","timing","stats","peak_rss_mb","model_loaded","excluded_removed"}` | `coverage` = state after the work (also after cancel and error, when the index was open). Then the process exits, or waits for the next `begin` (keep-alive) |
+| 11 | ← | `{"ev":"done","status":"ok"|"cancelled"|"error","mode","coverage","facets","timing","stats","peak_rss_mb","model_loaded","excluded_removed"}` | `coverage` = state after the work (also after cancel and error, when the index was open). Then the process exits, or waits for the next `begin` (keep-alive) |
 
 Progress events: `{"ev":"progress","phase":"scan"|"read"|"att"|"model"|"embed","done","total","rate","eta_s"[,"coverage"]}`.
 `rate` = items per second in this phase (embed: chunks per second, model load not counted). `eta_s` = seconds left in

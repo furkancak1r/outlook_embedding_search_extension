@@ -155,8 +155,8 @@ def item_chunk_texts(store, rowid, subject, sender, atts, main):
 
 
 def embed_pending(store, get_encoder, folder_ids, model_rev, batch=8, window=64, stop=lambda: False,
-                  progress=lambda done, total, rate: None):
-    """Embed the chunks of not-yet-embedded items in the scope, newest first.
+                  progress=lambda done, total, rate: None, since=None):
+    """Embed the chunks of not-yet-embedded items in the scope, newest first. since: only the delta ("Güncelle").
 
     Vectors are saved after every model batch (a killed process loses one batch). An item is marked embedded when
     every chunk has a vector, also after stop(). Chunks with a known text hash reuse the stored vector (moved, re-read
@@ -165,7 +165,7 @@ def embed_pending(store, get_encoder, folder_ids, model_rev, batch=8, window=64,
     rate = chunks per second since the first batch (the model load is not counted). Returns a stats dict.
     get_encoder() loads the model only if there is work.
     """
-    items = store.pending(folder_ids)
+    items = store.pending(folder_ids, since)
     todo = [(rowid, item_chunk_texts(store, rowid, subject, sender, atts, main))
             for rowid, subject, sender, atts, main in items]
     distinct = list({h for _, cs in todo for h, _ in cs})

@@ -100,6 +100,18 @@ Büyük bir posta kutusunda tam indeksleme saatler sürebilir. 2.19 test makines
 bin postalık gerçek bir PST'nin ilk indeksi 2 saatten uzun sürdü. Bu süre bir kez harcanır; sonraki çalışmalar yalnız yeni ve
 değişen postaları işler.
 
+### İndeksi güncel tutma: Güncelle
+
+Tam indekslemeden sonra İndeks sekmesinde **Güncelle**'ye basın (kısayol: Alt+G). HatırMail yalnız son indekslemeden sonra
+gelen, değişen, taşınan ve silinen postaları işler. Güncel bir indekste bu birkaç saniye sürer.
+
+- Bitince durum çubuğunda sonuç yazar: "Güncelleme bitti: 3 yeni, 1 değişen posta işlendi; 2 posta indeksten çıktı".
+  Değişiklik yoksa "İndeks güncel" yazar.
+- Hiç tam indekslenmemiş bir klasördeki postaları Güncelle okumaz. Durum çubuğu bunların sayısını yazar. Bu klasörler için
+  **İndekslemeyi başlat**'a basın.
+- **Durdur**'a basarsanız yapılan iş kaydedilir. Sonra **Güncelle**'ye yeniden basın.
+- Güncelleme sürerken **Ara**'ya basarsanız arama güncelleme bitince başlar.
+
 ### Arama
 
 1. **Ara** sekmesinde hatırladıklarınızı yazın. Örnekler: `geçen ay Ahmet'ten gelen kargo faturası`,
@@ -131,6 +143,31 @@ sonraki aramaya ya da İndeks sekmesine kalır. Arama kutusunun altındaki satı
 
 İndeksleme sürerken **Ara**'ya basarsanız HatırMail önce indekslemeyi durdurmak için onay ister. Aynı anda yalnız bir
 arama işlemi çalışır.
+
+### Gönderen, alıcı ve klasör filtreleri
+
+Arama kutusunun altında üç açılır liste vardır: **Gönderen** (Alt+N), **Alıcı** (Alt+L) ve **Klasör** (Alt+S).
+
+1. Kimden geldiğini, kime gittiğini ya da hangi klasörde olduğunu hatırladığınız değeri seçin.
+2. **Ara**'ya basın. Sonuçlarda yalnız bu filtrelere uyan postalar görünür. Durum çubuğu etkin filtreleri yazar.
+
+- Listeler indeksteki postalardan dolar (en sık 1.000 kişi). Yeni bir kişi ilk indekslemeden ya da Güncelle'den sonra
+  görünür.
+- Klasör listesi İndeks sekmesinde işaretli klasörlerdir. Alt klasörler ayrı satırdır ve seçilen klasöre dahil değildir.
+- "(tümü)" filtreyi kaldırır. Filtre değişince arama kendiliğinden yeniden başlamaz; **Ara**'ya basın.
+
+### Benzerlerini bul
+
+Outlook'ta bir e-postaya sağ tıklayın ve **Benzerlerini bul**'a basın. HatırMail penceresi açılır ve aynı konudaki e-postaları
+listeler. Sorgu yazmanız gerekmez. Arama, e-postanın indeksteki anlam vektörlerini kullanır; yapay zekâ modeli bu arama
+için yüklenmez. Pencere bu komutla yeni açıldıysa arama, pencerenin arka planda başlattığı model hazırlığının bitmesini
+bekleyebilir (birkaç saniye).
+
+- Sonuçlar Ara sekmesindeki listededir. "Neden" sütununda benzerlik değeri yazar ("benzerlik 0.91"). Gri satırlar yalnız
+  zayıf benzerliktir.
+- Ara sekmesindeki filtreler burada da geçerlidir.
+- E-posta henüz indekste yoksa ya da anlam indeksi yoksa durum çubuğu bunu yazar. İndeks sekmesinde **Güncelle**'ye basın
+  ve yeniden deneyin.
 
 ### Son aramalar ve kayıtlı aramalar
 

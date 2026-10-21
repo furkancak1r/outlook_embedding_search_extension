@@ -5,8 +5,14 @@ The Outlook add-in starts this process only on a user action (window open, Ara, 
   search: begin -> manifest* -> scan_done -> (need) -> items* -> items_done -> keyword results
           -> (need_att -> att_files)* -> embed new chunks -> final results -> done
           index_budget_s limits the indexing work (attachments + embedding); the rest waits for the next run.
-  index:  the same without a query and without a time limit ("İndekslemeyi başlat"). No results.
+  index:  the same without a query and without a time limit ("İndekslemeyi başlat"). No results. When the read phase
+          ends without a stop, the listed folders count as indexed at this session (folders.synced_gen).
+  update: "Güncelle": the same as index, but only for the changes after the last index run: changed mails, and new
+          mails of folders that an index run read completely (new mails of other folders: stats.unsynced_skipped);
+          attachments and embedding only for the delta (hm_store.DELTA). Deleted and moved mails leave the index.
   status: hello(coverage) -> done. No scan, no reading, no model.
+  similar: "Benzerlerini bul": hello -> results(final) -> done. The mails nearest to begin.similar_eid by its stored
+          vectors (hm_search.similar). No scan, no reading, no model, no index file for an unknown store.
 
 Every mode first deletes the mails of the folders in begin.exclude (excluded in Ayarlar) from the index file
 (Store.purge_folders); done.excluded_removed counts them. An excluded folder in the scope is a protocol error.
@@ -39,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hm_attach  # noqa: E402
 import hm_index  # noqa: E402
 import hm_search  # noqa: E402
+import hm_store  # noqa: E402
 from hm_embed import DIM, MODEL_REVISION  # noqa: E402
 from hm_store import INDEX_VERSION, Store  # noqa: E402
 
@@ -135,7 +142,7 @@ def db_path(data_dir, store_id):
     return Path(data_dir) / "index" / (hashlib.sha256(store_id.encode("utf-8")).hexdigest()[:24] + ".sqlite")
 
 
-MODES = ("search", "index", "status")
+MODES = ("search", "index", "update", "status", "similar")
 
 
 def load_encoder(args, enc):
@@ -171,6 +178,10 @@ def session(args, inbox, out, ctx, enc, begin=None):
     if not scope and mode != "status":
         raise ProtocolError("empty folder scope")
     query = str(begin.get("query") or "").strip()[:500] if mode == "search" else ""
+    # Ara tab filters (sender, recipient: keys from done.facets). The folder filter is the scope itself.
+    filters = begin.get("filters") or {}
+    if not isinstance(filters, dict) or any(not isinstance(v, (str, type(None))) for v in filters.values()):
+        raise ProtocolError("bad filters")
     now = datetime.fromisoformat(begin.get("now") or datetime.now().isoformat(timespec="seconds"))
     top_k = max(1, min(int(begin.get("top_k", 10)), 50))
     # Search mode: attachment reading and embedding stop index_budget_s after the read phase starts (the add-in
@@ -183,12 +194,23 @@ def session(args, inbox, out, ctx, enc, begin=None):
     path = db_path(args.data, store_info["id"])
     hello = lambda: out.send("hello", pid=os.getpid(), proto=PROTO, index_version=INDEX_VERSION,
                              model_rev=MODEL_REVISION, mode=mode, coverage=ctx["cov"](), model_ready="e" in enc)
-    if mode == "status":  # coverage only; an unknown store gets no index file
+    similar_eid = str(begin.get("similar_eid") or "") if mode == "similar" else ""
+    if mode == "similar" and not similar_eid:
+        raise ProtocolError("similar_eid missing")
+    if mode in ("status", "similar"):  # no scan, no reading, no model; an unknown store gets no index file
         store = Store(str(path) if path.exists() else ":memory:", MODEL_REVISION)
         ctx["store"] = store
         removed = store.purge_folders(exclude)
         ctx["cov"] = lambda: store.coverage(scope, atts=atts_on)
+        ctx["facets"] = lambda: hm_search.facets(store)
         hello()
+        if mode == "similar":  # "Benzerlerini bul": the stored vectors of the mail, no query, no model
+            t = time.perf_counter()
+            res = hm_search.similar(store, similar_eid, scope, MODEL_REVISION, DIM, top_k,
+                                    allow=hm_search.allowed(store, scope, filters))
+            out.send("results", stage="final", coverage=ctx["cov"](), **res)
+            return {"mode": mode, "excluded_removed": removed, "timing": {"similar_s": round(time.perf_counter() - t, 3)},
+                    "model_loaded": "e" in enc}
         # Preload only when a search can use the model: the scope has vectors.
         ctx["preload"] = bool(begin.get("preload")) and ctx["cov"]()["embedded"] > 0
         return {"mode": mode, "excluded_removed": removed}
@@ -204,6 +226,7 @@ def session(args, inbox, out, ctx, enc, begin=None):
         store.set_meta("store_name", store_info.get("name", ""))
         stats["att_crashed"] = store.fail_stale()
     ctx["cov"] = lambda: store.coverage(scope, atts=atts_on)
+    ctx["facets"] = lambda: hm_search.facets(store)
     cov = ctx["cov"]
     hello()
     last_cov = [time.perf_counter()]
@@ -225,6 +248,11 @@ def session(args, inbox, out, ctx, enc, begin=None):
     gen = time.time_ns() // 1_000_000
     paths = {f["id"]: f.get("path", "") for f in folders}
     rows, complete, need, mods = {}, [], [], {}
+    # Update: a new entry id in a folder that an index run read completely came (or moved in) after it; in another
+    # folder it can be any old mail: that folder needs "İndekslemeyi başlat". ponytail: entry ids, no change-time rule
+    # (whether a PST move keeps LastModificationTime is not verified).
+    synced = store.synced(scope) if mode == "update" else None
+    stats["unsynced_skipped"] = 0
     t = time.perf_counter()
     while True:
         msg = inbox.get(idle)
@@ -238,6 +266,9 @@ def session(args, inbox, out, ctx, enc, begin=None):
                 items = rows.pop(fid)
                 state = store.item_state([r[0] for r in items])
                 changed = [r for r in items if r[0] not in state or state[r[0]][1] != r[1]]
+                if synced is not None and fid not in synced:
+                    stats["unsynced_skipped"] += sum(1 for r in changed if r[0] not in state)
+                    changed = [r for r in changed if r[0] in state]
                 with store.tx():
                     store.mark_seen([(state[r[0]][0], fid) for r in items if r[0] in state], gen)
                     store.mark_stale([state[r[0]][0] for r in changed if r[0] in state])
@@ -277,6 +308,11 @@ def session(args, inbox, out, ctx, enc, begin=None):
         elif op == "items_done":
             stats["failed"] = len(msg.get("failed", []))
             stats["read_stopped"] = bool(msg.get("stopped"))
+            if mode == "index" and not stats["read_stopped"]:
+                # Every mail of these folders is in the index now (a failed read stays unknown: "Güncelle" asks for
+                # it again). The embedding and attachment backlog is not part of this flag.
+                with store.tx():
+                    store.set_synced(complete, gen)
             break
         else:
             raise ProtocolError("unexpected op during read: %s" % op)
@@ -284,9 +320,10 @@ def session(args, inbox, out, ctx, enc, begin=None):
     timing["read_s"] = round(time.perf_counter() - t, 3)
 
     # 3) Keyword results first (no model needed).
+    allow = hm_search.allowed(store, scope, filters) if mode == "search" else None  # after the read: new mails count
     if mode == "search":
         t = time.perf_counter()
-        res = hm_search.run(store, query, now, scope, top_k=top_k)
+        res = hm_search.run(store, query, now, scope, top_k=top_k, allow=allow)
         timing["keyword_s"] = round(time.perf_counter() - t, 3)
         out.send("results", stage="keyword", coverage=cov(), **res)
 
@@ -294,8 +331,13 @@ def session(args, inbox, out, ctx, enc, begin=None):
     #    reads the text and deletes each file at once. Pull = flow control and a small temp folder.
     t = time.perf_counter()
     stop = lambda: inbox.stop.is_set() or (deadline is not None and time.perf_counter() > deadline[0])
+    since = gen - 1 if mode == "update" else None  # update: attachments and embedding of the delta only
+    if since is not None:
+        stats["delta"] = store.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
+            f"SELECT count(*) FROM items i WHERE folder_id IN ({','.join('?' * len(scope))}) AND {hm_store.DELTA}",
+            [*scope, since]).fetchone()[0]
     if att_dir:
-        stats["att"] = read_attachments(store, inbox, out, scope, att_dir, idle, stop, progress)
+        stats["att"] = read_attachments(store, inbox, out, scope, att_dir, idle, stop, progress, since)
         timing["att_s"] = round(time.perf_counter() - t, 3)
         if inbox.cancelled.is_set():
             raise Cancelled()
@@ -320,10 +362,10 @@ def session(args, inbox, out, ctx, enc, begin=None):
     # A time-limited search loads the model only for the query, and only when the scope has a semantic index;
     # new chunks are embedded with it until the deadline. Without a semantic index the search gives keyword results
     # and the İndeks tab builds the index (no model load for a few chunks). Chunks with known vectors always finish.
-    want_model = mode == "index" or budget is None or bool(query and cov()["embedded"])
+    want_model = mode in ("index", "update") or budget is None or bool(query and cov()["embedded"])
     stats["embed"] = hm_index.embed_pending(store, get_encoder, scope, MODEL_REVISION,
                                             stop=stop if want_model else (lambda: True),
-                                            progress=lambda d, n, rate: progress("embed", d, n, t, rate))
+                                            progress=lambda d, n, rate: progress("embed", d, n, t, rate), since=since)
     timing["embed_s"] = round(time.perf_counter() - t, 3)
     if inbox.cancelled.is_set():
         raise Cancelled()
@@ -336,7 +378,8 @@ def session(args, inbox, out, ctx, enc, begin=None):
         t = time.perf_counter()
         # No semantic index yet (budget 0 or a new store): keyword results only, the model is not loaded.
         encoder = get_encoder() if query and cov()["embedded"] else None
-        res = hm_search.run(store, query, now, scope, encoder=encoder, model_rev=MODEL_REVISION, dim=DIM, top_k=top_k)
+        res = hm_search.run(store, query, now, scope, encoder=encoder, model_rev=MODEL_REVISION, dim=DIM, top_k=top_k,
+                            allow=allow)
         timing["final_s"] = round(time.perf_counter() - t, 3)
         out.send("results", stage="final", coverage=cov(), **res)
     timing["total_s"] = round(time.perf_counter() - t0, 3)
@@ -346,10 +389,10 @@ def session(args, inbox, out, ctx, enc, begin=None):
 ATT_BATCH = 4  # files saved by the add-in per request
 
 
-def read_attachments(store, inbox, out, scope, att_dir, idle, stop, progress):
+def read_attachments(store, inbox, out, scope, att_dir, idle, stop, progress, since=None):
     """Ask for pending attachments in small batches, read each saved file, delete it. Stops on cancel/finish/budget:
-    the rest stays 'pending' for the next run."""
-    todo = store.pending_atts(scope)  # (rowid, entry_id, idx, name, kind)
+    the rest stays 'pending' for the next run. since: only the delta (update mode)."""
+    todo = store.pending_atts(scope, since)  # (rowid, entry_id, idx, name, kind)
     counts = {"total": len(todo), "ok": 0, "empty": 0, "failed": 0, "unsupported": 0, "cached": 0}
     base = os.path.realpath(att_dir)
     t = time.perf_counter()
@@ -398,12 +441,15 @@ def main():
     out, inbox = Out(proto), Inbox(sys.stdin)
     code, enc, begin = 0, {}, None
 
-    def done(ctx, status, **kw):  # 'done' carries the index state after the work (the index panel shows it)
-        try:
-            cov = ctx["cov"]() if "cov" in ctx else None
-        except Exception:  # extra information only; the status counts
-            cov = None
-        out.send("done", status=status, coverage=cov, peak_rss_mb=peak_rss_mb(), **kw)
+    def done(ctx, status, **kw):
+        """'done' carries the index state after the work (the index panel shows it) and the filter values (Ara tab)."""
+        extra = {}
+        for k in ("cov", "facets"):
+            try:
+                extra[k] = ctx[k]() if k in ctx else None
+            except Exception:  # extra information only; the status counts
+                extra[k] = None
+        out.send("done", status=status, coverage=extra["cov"], facets=extra["facets"], peak_rss_mb=peak_rss_mb(), **kw)
 
     while True:  # one session, or more while the add-in keeps this process (keep_alive_s)
         ctx = {}
