@@ -124,7 +124,30 @@ namespace HatirMail
         public int SessionTimeoutS = 7200;  // hard limit for one search (an index run has none: it stops when idle)
         public bool Attachments = true;     // read attachment content (Excel, PDF, Word, pictures with OCR, ...)
         public int KeepAliveMin = 10;       // the model stays loaded so long after the last work while the window is open (0 = no)
+        /// <summary>Folders not indexed (Ayarlar "Klasörleri hariç tut"): store id -> folder entry ids. A checked folder
+        /// excludes its subfolders too. No entry for a store: DefaultExcluded names. An empty list: nothing excluded.</summary>
+        public Dictionary<string, List<string>> ExcludedFolders = new Dictionary<string, List<string>>();
         public string ConfigFile { get { return Path.Combine(Home, "settings.json"); } }
+
+        /// <summary>Folders excluded until the user makes a choice for the store: deleted items, junk, outbox, drafts,
+        /// sync issues (Turkish and English Outlook names; "Önemsiz E-Posta" in Turkish Outlook).</summary>
+        public static bool DefaultExcluded(string path)
+        {
+            string p = (path ?? "").TrimStart('\\');
+            return new[] { "Silinmiş", "Deleted", "Önemsiz", "Gereksiz", "Junk", "Giden", "Outbox", "Taslak", "Drafts", "Eşitleme", "Sync Issues" }
+                .Any(x => p.StartsWith(x, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>The excluded folders of a store: the chosen ones (or the defaults) and all their subfolders. A folder
+        /// that Outlook moved into an excluded folder (a deleted folder goes into Silinmiş Öğeler) is excluded too.</summary>
+        public HashSet<string> ExcludedIn(string storeId, List<FolderInfo> all)
+        {
+            List<string> chosen;
+            var roots = ExcludedFolders.TryGetValue(storeId ?? "", out chosen)
+                ? all.Where(f => chosen.Contains(f.Id)).Select(f => f.Path).ToList()
+                : all.Where(f => DefaultExcluded(f.Path)).Select(f => f.Path).ToList();
+            return new HashSet<string>(all.Where(f => roots.Any(r => f.Path == r || f.Path.StartsWith(r + "\\", StringComparison.Ordinal))).Select(f => f.Id));
+        }
 
         public static Settings Load()
         {
@@ -150,6 +173,10 @@ namespace HatirMail
                     if (d.TryGetValue("session_timeout_s", out v)) s.SessionTimeoutS = Convert.ToInt32(v);
                     if (d.TryGetValue("attachments", out v)) s.Attachments = Convert.ToBoolean(v);
                     if (d.TryGetValue("keep_alive_min", out v)) s.KeepAliveMin = Convert.ToInt32(v);
+                    if (d.TryGetValue("excluded_folders", out v) && v is Dictionary<string, object>)
+                        foreach (var kv in (Dictionary<string, object>)v)
+                            if (kv.Value is System.Collections.ArrayList) // a wrong type: that store keeps the defaults
+                                s.ExcludedFolders[kv.Key] = ((System.Collections.ArrayList)kv.Value).OfType<string>().Distinct().ToList();
                 }
                 catch { } // defaults stay for the values not read
             }
@@ -175,11 +202,15 @@ namespace HatirMail
             var d = new Dictionary<string, object> {
                 {"threads", Threads}, {"memory_limit_mb", MemoryLimitMb}, {"search_index_budget_s", SearchIndexBudgetS},
                 {"idle_timeout_s", IdleTimeoutS}, {"session_timeout_s", SessionTimeoutS}, {"attachments", Attachments},
-                {"keep_alive_min", KeepAliveMin} };
+                {"keep_alive_min", KeepAliveMin}, {"excluded_folders", ExcludedFolders} };
             string tmp = ConfigFile + ".tmp";
-            File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(d), new UTF8Encoding(false));
-            if (File.Exists(ConfigFile)) File.Replace(tmp, ConfigFile, null);
-            else File.Move(tmp, ConfigFile);
+            try
+            {
+                File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(d), new UTF8Encoding(false));
+                if (File.Exists(ConfigFile)) File.Replace(tmp, ConfigFile, null);
+                else File.Move(tmp, ConfigFile);
+            }
+            catch { try { File.Delete(tmp); } catch { } throw; }
         }
     }
 

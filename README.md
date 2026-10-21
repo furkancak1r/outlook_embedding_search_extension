@@ -5,7 +5,7 @@ Klasik Outlook için yerel, hatırlamaya dayalı e-posta araması. Kullanıcı h
 PowerPoint, PDF, resimler Windows OCR ile, eklenmiş iletiler, zip). Yapay zekâ (EmbeddingGemma 2, yalnız 270M metin
 bileşeni, ONNX Runtime) kullanıcının kendi bilgisayarında çalışır. Model arama penceresi açılınca yüklenir ve
 pencere açıkken hazır kalır; aramalar modeli beklemez. Pencere kapanınca model de kapanır. Pencerede üç sekme vardır: **Ara**, **İndeks** (indeks durumu, yüzdeler, tam indekslemeyi başlatma) ve
-**Ayarlar**.
+**Ayarlar** (indekslenmeyecek klasörleri seçme dahil).
 
 | Belge | İçerik |
 |---|---|
@@ -34,7 +34,7 @@ python3.13 packaging/make_text_only.py models/embeddinggemma-2 models/text-only
 # ONNX export + parity (dev venv .venv-onnx: torch 2.14.1, transformers 5.19.0, onnx 1.23.2, onnxscript 0.7.2, onnxruntime 1.31.0)
 .venv-onnx/bin/python eval/export_onnx.py models/text-only models/onnx
 .venv-onnx/bin/python eval/parity_onnx.py models/text-only models/onnx reports/parity-mac.json 4
-.venv/bin/python -m unittest discover -s worker/tests                    # 47 tests (1 is Windows OCR only), no model
+.venv/bin/python -m unittest discover -s worker/tests                    # 51 tests (1 is Windows OCR only), no model
 python3.13 eval/make_corpus.py                                           # deterministic synthetic data
 .venv/bin/python eval/run_eval.py --model models/onnx --data tmp/eval --out reports/eval-mac.json
 .venv/bin/python eval/run_eval.py --att --model models/onnx --data tmp/eval-att --out reports/eval-att-mac.json

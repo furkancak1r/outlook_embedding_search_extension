@@ -143,7 +143,8 @@ Outlook.exe (Klasik)
   - `index` (**İndekslemeyi başlat**): süre sınırı yok, sorgu yok. Kullanıcı **Durdur**'a basabilir.
   - `status`: yalnız indeks durumu (klasör başına okunan/anlam/ek sayıları). Tarama, posta okuma ve model yok;
     bilinmeyen posta kutusu için dosya da açılmaz. Pencere açılınca, posta kutusu değişince, **Durumu yenile**'ye
-    basılınca ve ek okuma ayarı değişince bir kez çalışır.
+    basılınca, ek okuma ayarı değişince ve hariç tutulan klasörler kaydedilince bir kez çalışır. Hariç tutulan
+    klasörleri indeksten siler (bölüm 6); bütün klasörler hariç tutulmuşsa kapsamı boş olabilir.
 - **Hazır model (20 Ekim, kullanıcı isteği):** pencere açıkken worker bir işten sonra kapanmaz, sonraki işi bekler; model
   bellekte kalır. Pencere açılınca yapılan durum okumasından sonra, kapsamda anlam indeksi varsa worker modeli arka planda
   yükler (`preload`). İlk arama da modeli beklemez. Bellek: pencere açıkken ~1–1,5 GB (2.19 ölçümü).
@@ -185,6 +186,16 @@ Outlook.exe (Klasik)
   ve ek metni önbelleği (`att_texts`, `fts_att`) aynı SQLite dosyasındadır. Silmeden önce hazır tutulan worker kapanır.
   Oturum sürerken düğme kapalıdır; bu yüzden hiçbir worker dosyaları açık tutmaz. `settings.json` kalır. Worker ve
   protokol değişmez. Silmeden sonraki durum okuması yeni dosya açmaz (bilinmeyen posta kutusu kuralı).
+- **Klasörleri hariç tutma (21 Ekim, kullanıcı isteği):** Ayarlar > **Klasörleri hariç tut…** penceresinde seçilen
+  klasörler (alt klasörleriyle) İndeks listesinde görünmez ve hiçbir aramanın ya da indekslemenin kapsamına girmez.
+  Seçim `settings.json` içinde `excluded_folders` (posta kutusu kimliği → klasör EntryID'leri) olarak durur; kayıt
+  yoksa eski ad kuralı (Silinmiş/Deleted, Önemsiz/Gereksiz/Junk, Giden/Outbox, Taslak/Drafts, Eşitleme/Sync Issues)
+  varsayılandır. Eklenti her oturumda listeyi `begin.exclude` ile gönderir. Worker oturum başında bu klasörlerin
+  postalarını (`fts`, `fts_att`, `chunks`, `atts`), başka postanın kullanmadığı ek metnini ve vektörlerini siler. Metin
+  dosyadan da çıkar: FTS5 `optimize` (silinen sözcükler segmentlerde kalır), sonra `VACUUM` ve
+  `wal_checkpoint(TRUNCATE)`. 20 Ekim denemesi: `optimize` olmadan `VACUUM` sonrasında sözcük dosyada kaldı. Yarıda
+  kalan sıkıştırmayı `meta.compact` sonraki oturumda yeniden başlatır. Kapsamla çakışan `exclude` protokol hatasıdır.
+  Birim testi ham dosya baytlarını denetler.
 - **Son ve kayıtlı aramalar (20 Ekim, kullanıcı isteği):** eklenti başlayan her aramanın metnini `data\searches.json`
   dosyasına yazar (en çok 20 son arama ve adlandırılmış kayıtlı aramalar). Öneriler Windows'un otomatik tamamlama
   listesiyle gösterilir. Dosya yalnız eklentide okunur ve yazılır; worker ve protokol değişmez. **İndeksi sil** bu dosyayı

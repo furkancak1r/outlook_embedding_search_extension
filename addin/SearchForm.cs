@@ -57,12 +57,17 @@ namespace HatirMail
         // Ayarlar
         readonly NumericUpDown numThreads = new NumericUpDown(), numMemory = new NumericUpDown(), numBudget = new NumericUpDown(), numKeep = new NumericUpDown();
         readonly CheckBox chkAtt = new CheckBox();
-        readonly Button saveBtn, defaultsBtn, deleteBtn;
+        readonly Button saveBtn, defaultsBtn, deleteBtn, excludeBtn;
         // Status bar
         readonly Label status = new Label(), summary = new Label();
         readonly ProgressBar progress = new ProgressBar();
 
-        List<FolderInfo> folders = new List<FolderInfo>();
+        List<FolderInfo> folders = new List<FolderInfo>();      // folders of the store that are indexed (İndeks list)
+        List<FolderInfo> allFolders = new List<FolderInfo>();   // all mail folders of the store
+        HashSet<string> excludedIds = new HashSet<string>();    // excluded in Ayarlar (with subfolders): never in a scope
+        public int LastExcludedRemoved = -1; // test hook: excluded_removed of the last done
+        bool purgeAsked;    // the next status check applies a new folder exclusion: it reports the deleted mails
+        string notice;      // that report: it stays in front of the model texts until the next session starts
         readonly Dictionary<string, FolderCov> cov = new Dictionary<string, FolderCov>();
         WorkerSession session;
         WorkerProcess warm; // kept worker between sessions (window open, keep-alive on): the model stays loaded
@@ -101,7 +106,7 @@ namespace HatirMail
             indexBtn = MakeButton("İndekslemeyi &başlat", true); indexStopBtn = MakeButton("&Durdur", false);
             refreshBtn = MakeButton("Durumu &yenile", false);
             saveBtn = MakeButton("&Kaydet", true); defaultsBtn = MakeButton("&Varsayılan değerler", false);
-            deleteBtn = MakeButton("İndeksi &sil", false);
+            deleteBtn = MakeButton("İndeksi &sil", false); excludeBtn = MakeButton("Klasörleri &hariç tut…", false);
 
             // Header band
             var title = new Label { Text = "HatırMail", AutoSize = true, Dock = DockStyle.Top, Font = new Font("Segoe UI Semibold", 15f * pt), UseCompatibleTextRendering = false,
@@ -194,7 +199,8 @@ namespace HatirMail
             brow.Controls.Add(indexBtn); brow.Controls.Add(indexStopBtn);
             var note = Wrap(new Label { ForeColor = SystemColors.GrayText, Padding = new Padding(0, S(2), 0, S(8)),
                                         Text = "Tam indeksleme uzun sürebilir; bu sırada Outlook'u kullanabilirsiniz. Durdurursanız yapılan iş kaydedilir ve sonra kaldığı yerden sürer. Outlook kapanınca indeksleme de durur." });
-            var flabel = Wrap(new Label { Padding = new Padding(0, 0, 0, S(4)), Text = "Klasörler (işaretli klasörler aranır ve indekslenir):" });
+            var flabel = Wrap(new Label { Padding = new Padding(0, 0, 0, S(4)),
+                                          Text = "Klasörler (işaretli klasörler aranır ve indekslenir; Ayarlar'da hariç tutulan klasörler bu listede yoktur):" });
             folderList.Dock = DockStyle.Fill; folderList.View = View.Details; folderList.CheckBoxes = true; folderList.FullRowSelect = true;
             folderList.HideSelection = false; folderList.AccessibleName = "Klasörler";
             folderList.Columns.Add("Klasör", S(330));
@@ -229,7 +235,8 @@ namespace HatirMail
             sgrid.Controls.Add(chkAtt, 0, 8); sgrid.SetColumnSpan(chkAtt, 2);
             var sbtn = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
             deleteBtn.Margin = new Padding(S(24), deleteBtn.Margin.Top, deleteBtn.Margin.Right, deleteBtn.Margin.Bottom); // apart from Kaydet
-            sbtn.Controls.Add(saveBtn); sbtn.Controls.Add(defaultsBtn); sbtn.Controls.Add(deleteBtn);
+            excludeBtn.AccessibleDescription = "İndekslenmeyecek ve aranmayacak klasörleri seçin";
+            sbtn.Controls.Add(saveBtn); sbtn.Controls.Add(defaultsBtn); sbtn.Controls.Add(excludeBtn); sbtn.Controls.Add(deleteBtn);
             sgrid.Controls.Add(sbtn, 0, 9); sgrid.SetColumnSpan(sbtn, 2);
             var info = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, S(14), 0, 0), Anchor = AnchorStyles.Left | AnchorStyles.Right,
                                    Text = "Gizlilik: Arama, ek okuma ve yapay zekâ yalnız bu bilgisayarda çalışır. E-posta ve arama metni hiçbir yere gönderilmez ve günlüğe yazılmaz.\n" +
@@ -247,6 +254,7 @@ namespace HatirMail
             refreshBtn.Click += (s, e) => StartStatus();
             saveBtn.Click += (s, e) => SaveSettings();
             deleteBtn.Click += (s, e) => ConfirmDeleteIndex();
+            excludeBtn.Click += (s, e) => AskExcluded();
             defaultsBtn.Click += (s, e) => { ShowSettings(new Settings()); SetStatus("Varsayılan değerler yüklendi. Kaydetmek için Kaydet'e basın."); };
             FormClosing += OnClosing;
             Load += (s, e) =>
@@ -577,31 +585,119 @@ namespace HatirMail
             var st = storeBox.SelectedItem as StoreItem;
             if (session != null && session.Mode == "status") { queued = null; session.Kill("store changed"); }
             folderList.Items.Clear(); cov.Clear();
+            folders = new List<FolderInfo>(); allFolders = new List<FolderInfo>(); excludedIds = new HashSet<string>();
+            UpdateButtons();
             if (st == null) return;
             try
             {
-                folders = source.Folders(st.Id);
+                allFolders = source.Folders(st.Id);
+                // Folders excluded in Ayarlar (or by the default names) are not in the list: never searched, never indexed.
+                excludedIds = settings.ExcludedIn(st.Id, allFolders);
+                folders = allFolders.Where(f => !excludedIds.Contains(f.Id)).ToList();
                 loadingFolders = true;
                 folderList.BeginUpdate();
                 foreach (var f in folders)
-                {
-                    string p = f.Path.TrimStart('\\');
-                    bool skip = p.StartsWith("Silinmiş", StringComparison.OrdinalIgnoreCase) || p.StartsWith("Deleted", StringComparison.OrdinalIgnoreCase)
-                                || p.StartsWith("Önemsiz", StringComparison.OrdinalIgnoreCase) // Turkish Outlook: "Önemsiz E-Posta"
-                                || p.StartsWith("Gereksiz", StringComparison.OrdinalIgnoreCase) || p.StartsWith("Junk", StringComparison.OrdinalIgnoreCase)
-                                || p.StartsWith("Giden", StringComparison.OrdinalIgnoreCase) || p.StartsWith("Outbox", StringComparison.OrdinalIgnoreCase)
-                                || p.StartsWith("Taslak", StringComparison.OrdinalIgnoreCase) || p.StartsWith("Drafts", StringComparison.OrdinalIgnoreCase)
-                                || p.StartsWith("Eşitleme", StringComparison.OrdinalIgnoreCase) || p.StartsWith("Sync Issues", StringComparison.OrdinalIgnoreCase);
-                    var it = new ListViewItem(new[] { p, f.Count.ToString("N0", TR), "", "", "", "" }) { Checked = !skip, Tag = f };
-                    folderList.Items.Add(it);
-                }
+                    folderList.Items.Add(new ListViewItem(new[] { f.Path.TrimStart('\\'), f.Count.ToString("N0", TR), "", "", "", "" }) { Checked = true, Tag = f });
                 folderList.EndUpdate();
                 FitColumns(folderList);
                 loadingFolders = false;
-                UpdateSummary();
-                StartStatus();
+                UpdateSummary(); UpdateButtons();
+                StartStatus(); // also deletes the excluded folders from the index (begin.exclude)
             }
             catch (Exception ex) { folderList.EndUpdate(); loadingFolders = false; SetStatus("Klasörler okunamadı: " + ex.GetType().Name); }
+        }
+
+        // ------------------------------------------------------------------ folders excluded from the index (Ayarlar)
+        void AskExcluded()
+        {
+            var st = storeBox.SelectedItem as StoreItem;
+            if (session != null || st == null || allFolders.Count == 0) return;
+            using (var d = new ExcludeDialog(this, st.Name, allFolders, excludedIds))
+                if (d.ShowDialog(this) == DialogResult.OK) SetExcluded(d.Chosen());
+        }
+
+        /// <summary>Save the excluded folders of the selected store (folder entry ids; subfolders follow) and apply them:
+        /// the folder list is built again, and its status check deletes the mails of these folders from the index.
+        /// A write error keeps the old choice. Returns false when nothing changed.</summary>
+        public bool SetExcluded(List<string> ids)
+        {
+            var st = storeBox.SelectedItem as StoreItem;
+            if (st == null) return false;
+            if (session != null) { SetStatus("Önce çalışan aramayı ya da indekslemeyi durdurun."); return false; }
+            List<string> old;
+            bool had = settings.ExcludedFolders.TryGetValue(st.Id, out old);
+            settings.ExcludedFolders[st.Id] = ids.Distinct().ToList();
+            try { settings.Save(); }
+            catch (Exception ex)
+            {
+                if (had) settings.ExcludedFolders[st.Id] = old; else settings.ExcludedFolders.Remove(st.Id);
+                SetStatus("Klasör seçimi kaydedilemedi (" + ex.GetType().Name + "). Eski seçim geçerli.");
+                return false;
+            }
+            // Results of the old scope can show mails that are not in the index any more.
+            list.Items.Clear(); ShowPreview();
+            LastExcludedRemoved = -1;
+            purgeAsked = File.Exists(settings.Python) && File.Exists(settings.Worker); // else no status check runs
+            LoadFolders();
+            SetStatus(purgeAsked ? "Klasör seçimi kaydedildi. Hariç tutulan klasörlerin postaları indeksten siliniyor…"
+                                 : "Klasör seçimi kaydedildi. Postalar, arama bileşeni bulununca indeksten silinir.");
+            return true;
+        }
+
+        /// <summary>"İndekslenmeyecek klasörler": all mail folders of the store with check boxes. A checked folder checks
+        /// its subfolders (they are excluded with it), and they cannot be unchecked alone. Kaydet returns the top checked
+        /// folders only (Chosen); subfolders made later are then excluded too.</summary>
+        public sealed class ExcludeDialog : Form
+        {
+            public readonly CheckedListBox Box = new CheckedListBox();
+            public readonly TableLayoutPanel Body = new TableLayoutPanel { AutoSize = true, ColumnCount = 1 };
+            readonly List<FolderInfo> all;
+            bool setting;
+
+            public ExcludeDialog(SearchForm o, string storeName, List<FolderInfo> all, HashSet<string> excluded)
+            {
+                this.all = all;
+                Text = "İndekslenmeyecek klasörler"; Font = o.Font; AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.FixedDialog;
+                MaximizeBox = MinimizeBox = false; ShowInTaskbar = false; StartPosition = FormStartPosition.CenterParent;
+                var l = new Label { AutoSize = true, MaximumSize = new Size(o.S(520), 0), Margin = new Padding(0, 0, 0, o.S(8)), UseCompatibleTextRendering = false,
+                                    Text = "Posta kutusu: " + storeName + "\n\nİşaretli klasörler ve alt klasörleri indekslenmez ve aranmaz. Bu klasörlerin postaları " +
+                                           "kaydettiğinizde indeksten silinir. Outlook'taki postalarınız değişmez." };
+                Box.CheckOnClick = true; Box.IntegralHeight = false; Box.Width = o.S(520); Box.Height = o.S(300); Box.AccessibleName = "Hariç tutulacak klasörler";
+                Box.Margin = new Padding(0, 0, 0, o.S(12));
+                foreach (var f in all) Box.Items.Add(f.Path.TrimStart('\\'), excluded.Contains(f.Id));
+                Box.ItemCheck += OnItemCheck;
+                var ok = o.MakeButton("&Kaydet", true); var cancel = o.MakeButton("İptal", false);
+                ok.DialogResult = DialogResult.OK; cancel.DialogResult = DialogResult.Cancel;
+                ok.UseCompatibleTextRendering = cancel.UseCompatibleTextRendering = false;
+                var b = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, Margin = new Padding(0) };
+                b.Controls.Add(ok); b.Controls.Add(cancel);
+                Body.Controls.Add(l); Body.Controls.Add(Box); Body.Controls.Add(b);
+                Body.Location = new Point(o.S(14), o.S(12));
+                Controls.Add(Body);
+                var ps = Body.GetPreferredSize(Size.Empty);
+                ClientSize = new Size(ps.Width + o.S(28), ps.Height + o.S(22));
+                AcceptButton = ok; CancelButton = cancel;
+            }
+
+            bool Under(int i, int parent) { return all[i].Path.StartsWith(all[parent].Path + "\\", StringComparison.Ordinal); }
+
+            // Checked: the subfolders follow. Unchecked: refused while a parent folder is checked (the parent excludes it).
+            void OnItemCheck(object s, ItemCheckEventArgs e)
+            {
+                if (setting) return;
+                if (e.NewValue == CheckState.Unchecked && Enumerable.Range(0, all.Count).Any(p => p != e.Index && Box.GetItemChecked(p) && Under(e.Index, p)))
+                { e.NewValue = CheckState.Checked; return; }
+                setting = true;
+                for (int i = 0; i < all.Count; i++) if (Under(i, e.Index)) Box.SetItemChecked(i, e.NewValue == CheckState.Checked);
+                setting = false;
+            }
+
+            /// <summary>The checked folders without a checked parent (entry ids).</summary>
+            public List<string> Chosen()
+            {
+                var on = Enumerable.Range(0, all.Count).Where(Box.GetItemChecked).ToList();
+                return on.Where(i => !on.Any(p => p != i && Under(i, p))).Select(i => all[i].Id).ToList();
+            }
         }
 
         // The worker's file name for a store (hm_worker.db_path): sha256 of the UTF-8 store id, first 24 hex characters.
@@ -694,10 +790,10 @@ namespace HatirMail
         {
             if (session != null) return;
             var st = storeBox.SelectedItem as StoreItem;
-            var all = folders;
-            if (st == null || all.Count == 0 || !File.Exists(settings.Python) || !File.Exists(settings.Worker)) return;
+            // The scope can be empty (every folder excluded): the check then only deletes the excluded folders.
+            if (st == null || allFolders.Count == 0 || !File.Exists(settings.Python) || !File.Exists(settings.Worker)) return;
             EventNames.Clear();
-            Begin(new WorkerSession(this, source, settings, "status", st.Id, st.Name, all, "", preload: true));
+            Begin(new WorkerSession(this, source, settings, "status", st.Id, st.Name, folders, "", preload: true));
         }
 
         int KeepMs { get { return KeepAliveMsOverride > 0 ? KeepAliveMsOverride : settings.KeepAliveMin * 60000; } }
@@ -710,6 +806,8 @@ namespace HatirMail
         void Begin(WorkerSession s)
         {
             if (closing) return; // the window closes: no new worker
+            s.Exclude = excludedIds.ToList(); // every session deletes them from the index (the store cannot change meanwhile)
+            if (s.Mode != "status" || !purgeAsked) notice = null;
             session = s;
             UpdateButtons(); UpdateSummary();
             if (s.Mode != "status") { progress.Visible = true; progress.Style = ProgressBarStyle.Marquee; }
@@ -763,8 +861,9 @@ namespace HatirMail
         {
             string state = ev.ContainsKey("state") ? ev["state"] as string : null;
             if (session == null && !closing)
-                SetStatus(state == "loading" ? "Yapay zekâ modeli arka planda hazırlanıyor. Bu sırada arama yapabilirsiniz."
-                        : state == "ready" ? "Yapay zekâ hazır: aramalar beklemeden çalışır." : "Yapay zekâ modeli yüklenemedi. Arama yine çalışır; yeniden deneyin.");
+                SetStatus((notice != null ? notice + " " : "") +
+                          (state == "loading" ? "Yapay zekâ modeli arka planda hazırlanıyor. Bu sırada arama yapabilirsiniz."
+                        : state == "ready" ? "Yapay zekâ hazır: aramalar beklemeden çalışır." : "Yapay zekâ modeli yüklenemedi. Arama yine çalışır; yeniden deneyin."));
             if (p == warm && state == "ready") ArmKeep(); // the keep-alive time counts from the end of the load
             var h = ModelStateChanged; if (h != null) h(state);
         }
@@ -795,6 +894,7 @@ namespace HatirMail
             stopBtn.Enabled = m == "search"; indexStopBtn.Enabled = m == "index";
             storeBox.Enabled = !Busy;
             deleteBtn.Enabled = m == null; // no worker may hold the index files
+            excludeBtn.Enabled = m == null && allFolders.Count > 0;
             openBtn.Enabled = list.SelectedItems.Count > 0;
         }
 
@@ -823,6 +923,17 @@ namespace HatirMail
                     if (stt == "cancelled")
                         SetStatus("Durduruldu. Yapılan iş kaydedildi; sonraki arama ya da indeksleme kaldığı yerden sürer.");
                     if (stt == "ok" && mode == "index") SetStatus("İndeksleme bitti.");
+                    LastExcludedRemoved = ev.ContainsKey("excluded_removed") && ev["excluded_removed"] != null ? Convert.ToInt32(ev["excluded_removed"]) : -1;
+                    if (mode == "status" && purgeAsked)
+                    {
+                        // The status check after "Klasörleri hariç tut": the model events after it keep this text in front.
+                        purgeAsked = false;
+                        notice = stt != "ok" ? "Klasör seçimi kaydedildi ama postalar indeksten silinemedi (" + (ev.ContainsKey("error") ? ev["error"] : "") +
+                                               "). Durumu yenile'ye basarak yeniden deneyin."
+                               : LastExcludedRemoved > 0 ? string.Format(TR, "Klasör seçimi kaydedildi. Hariç tutulan klasörlerden {0:N0} posta indeksten silindi.", LastExcludedRemoved)
+                               : "Klasör seçimi kaydedildi. İndekste bu klasörlerden posta yoktu.";
+                        SetStatus(notice);
+                    }
                     break;
             }
         }
@@ -1210,6 +1321,10 @@ namespace HatirMail
         public int WorkerPid { get { return session != null ? session.Pid : 0; } }
         public RichTextBox PreviewBox { get { return preview; } }
         public List<KeyValuePair<string, string>> FolderIds() { return folders.Select(f => new KeyValuePair<string, string>(f.Id, f.Path)).ToList(); }
+        public List<string> ListedFolderIds() { return folderList.Items.Cast<ListViewItem>().Select(i => ((FolderInfo)i.Tag).Id).ToList(); } // test hook
+        public List<string> ExcludedFolderIds { get { return excludedIds.ToList(); } }                                                 // test hook
+        public List<FolderInfo> AllFolders { get { return allFolders; } }                                                             // test hook
+        public bool ExcludeButtonEnabled { get { return excludeBtn.Enabled; } }                                                       // test hook
         public void Feed(string mode, Dictionary<string, object> ev) { OnEvent(mode, ev); } // test hook: a worker event
         public string IndexFileOf(string storeId) { return IndexFile(storeId); }          // test hook
         public string QueryText { get { return query.Text; } }                            // test hooks: searches
@@ -1364,6 +1479,7 @@ namespace HatirMail
         public int Pid { get { return Proc != null ? Proc.Pid : 0; } }
         public int StartedPid { get { return Proc != null ? Proc.StartedPid : 0; } }
         public bool KeepProcess; // the worker stays for the next session after a good end
+        public List<string> Exclude = new List<string>(); // folder ids excluded in Ayarlar: the worker deletes them from the index
 
         public WorkerSession(SearchForm form, IMailSource source, Settings settings, string mode, string storeId, string storeName,
                              List<FolderInfo> scope, string query, bool preload = false)
@@ -1401,7 +1517,7 @@ namespace HatirMail
                 {"top_k", 10}, {"idle_timeout_s", settings.IdleTimeoutS}, {"keep_alive_s", keepAliveS}, {"preload", Preload && keepAliveS > 0},
                 {"attachments", Mode == "status" ? settings.Attachments : attDir != null}, {"att_dir", attDir},
                 {"store", new Dictionary<string, object> { {"id", storeId}, {"name", storeName} }},
-                {"folders", scope.Select(f => new Dictionary<string, object> { {"id", f.Id}, {"path", f.Path} }).ToList()} };
+                {"folders", scope.Select(f => new Dictionary<string, object> { {"id", f.Id}, {"path", f.Path} }).ToList()}, {"exclude", Exclude} };
             if (Mode == "search") begin["index_budget_s"] = settings.SearchIndexBudgetS;
             Send(begin);
         }

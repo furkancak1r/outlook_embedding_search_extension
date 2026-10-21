@@ -378,6 +378,34 @@ class AttachmentTests(unittest.TestCase):
             self.assertEqual(self.store.gc_att_texts(), 1)
         self.assertEqual(self.store.db.execute("SELECT count(*) FROM att_texts").fetchone()[0], 0)
 
+    def test_excluded_folder_leaves_index(self):
+        """Ayarlar: a folder excluded from the index. Its mails, attachment text and vectors leave the index, and the
+        words leave the file bytes too (FTS optimize + VACUUM + WAL checkpoint). Other folders stay searchable."""
+        path = os.path.join(self.tmp.name, "t.sqlite")
+        raw = lambda: b"".join(Path(p).read_bytes() for p in (path, path + "-wal") if os.path.exists(p)).lower()
+        self.ingest(mail("E1", "Kargo faturası", "Eylül kargo faturası ekte."),
+                    dict(att_mail("P1", "Özel sayım", ["Stok_Sayim_Eylul.xlsx"], body="zebragizli kişisel not"), folder="F2"))
+        for rowid, eid, idx, name, kind in self.store.pending_atts(["F2"]):
+            hm_index.apply_file(self.store, (rowid, idx, name, kind), (ATT / name).read_bytes())
+        hm_index.embed_pending(self.store, lambda: self.enc, ["F1", "F2"], REV)
+        with self.store.tx():
+            self.store.set_folder("F2", "\\Özel", 1)
+        count = lambda t: self.store.db.execute(f"SELECT count(*) FROM {t}").fetchone()[0]  # nosemgrep: sqlalchemy-execute-raw-query
+        n_vec = count("vectors")
+        self.assertTrue(b"zebragizli" in raw() and b"galvanizli" in raw())
+        self.assertEqual(self.store.purge_folders(["F2", "F9"]), 1)
+        self.assertEqual(self.store.purge_folders([]), 0)  # nothing to do: no second VACUUM
+        self.assertEqual([e for (e,) in self.store.db.execute("SELECT entry_id FROM items")], ["E1"])
+        self.assertEqual((count("atts"), count("att_texts"), count("folders")), (0, 0, 0))
+        self.assertLess(count("vectors"), n_vec)
+        self.assertEqual(self.store.db.execute("SELECT count(*) FROM vectors WHERE text_hash NOT IN"
+                                               " (SELECT text_hash FROM chunks)").fetchone()[0], 0)
+        self.assertFalse(self.store.meta("compact"))
+        data = raw()
+        self.assertFalse(b"zebragizli" in data or b"galvanizli" in data, "excluded text left in the file")  # no byte dump
+        self.assertEqual(hm_search.run(self.store, "zebragizli", NOW, ["F1", "F2"])["results"], [])
+        self.assertEqual(self.search("kargo faturası")[0]["eid"], "E1")  # the index still works
+
     def test_corrupt_file_failed_and_crash_not_retried(self):
         self.ingest(att_mail("A1", "Fatura", ["Fatura_TR4471.pdf"]))
         self.assertEqual(self.read_all(data=b"%PDF-broken"), ["failed"])
@@ -625,6 +653,40 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual((need, code, ev[-1]["status"]), (set(), 0, "ok"))
             final = [e for e in ev if e["ev"] == "results" and e["stage"] == "final"][0]
             self.assertEqual(final["results"][0]["match_attachment"], "Stok_Sayim_Eylul.xlsx")
+
+    def test_exclude_folder_protocol(self):
+        """begin.exclude: the status check at the window open deletes the excluded folder from the index; later
+        sessions do not see it. An excluded folder in the scope is an error. A status check with an empty scope (every
+        folder excluded) works and makes no file for an unknown store; other modes still need a scope."""
+        with tempfile.TemporaryDirectory() as d:
+            p = self.start(d)
+            self.send(p, op="begin", session="s" * 32, mode="status", store={"id": "S0"}, folders=[], exclude=["F2"])
+            ev = self.events(p)
+            self.close(p)
+            self.assertEqual((ev[-1]["status"], ev[-1]["excluded_removed"], p.returncode), ("ok", 0, 0))
+            self.assertFalse(os.path.exists(os.path.join(d, "index")))
+            mails = [mail("E1", "Kargo faturası", "Eylül kargo faturası.", "2026-09-12T09:00:00"),
+                     mail("P1", "Özel", "zebragizli kişisel not.", "2026-09-20T09:00:00", folder="F2")]
+            self.run_session(d, mails, "", folders=("F1", "F2"), mode="index")
+            p = self.start(d)
+            self.send(p, op="begin", session="s" * 32, mode="status", store={"id": "S1"}, folders=[{"id": "F1"}],
+                      exclude=["F2"])
+            ev = self.events(p)
+            self.close(p)
+            self.assertEqual((ev[-1]["status"], ev[-1]["excluded_removed"], ev[-1]["coverage"]["indexed"]), ("ok", 1, 1))
+            ev, code, need = self.run_session(d, mails, "zebragizli kişisel not", exclude=["F2"])
+            final = [e for e in ev if e["ev"] == "results" and e["stage"] == "final"][0]
+            self.assertEqual((code, need, ev[-1]["excluded_removed"]), (0, set(), 0))
+            self.assertTrue(all(r["eid"] != "P1" for r in final["results"]))
+            data = b"".join(f.read_bytes() for f in Path(d, "index").iterdir())
+            self.assertFalse(b"zebragizli" in data, "excluded text left in the file")
+            for folders, exclude, mode, detail in (([{"id": "F1"}], ["F1"], "status", "excluded folder in scope"),
+                                                   ([], ["F2"], "search", "empty folder scope")):
+                p = self.start(d)
+                self.send(p, op="begin", session="s" * 32, mode=mode, store={"id": "S1"}, folders=folders, exclude=exclude)
+                ev = self.events(p)
+                self.close(p)
+                self.assertEqual((ev[-1]["status"], ev[-1]["detail"], p.returncode), ("error", detail, 2))
 
     def test_unknown_mode_rejected(self):
         with tempfile.TemporaryDirectory() as d:

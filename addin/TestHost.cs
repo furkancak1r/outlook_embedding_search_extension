@@ -13,9 +13,13 @@
 //          --keep-alive-min N   keep-alive setting for this run (0 = old behavior: the worker exits after each session)
 //          --open-att SHA256    press "Eki aç" on the first result: the opened copy must have this SHA-256 (a zip member:
 //                               the member bytes), the Mark of the Web (Windows) and be gone after the window close
+//          --exclude FOLDER_ID  the folder is excluded in Ayarlar (this run only; settings.json does not change): the status
+//                               check at the window open must delete its mails from the index and the list must not show it
+//          --expect-removed N   with --exclude: the number of deleted mails (default: more than 0)
 //        HatirMail.TestHost.exe <corpus.json> <hatirmail_home> --layout-check [screenshot_dir]
 //        HatirMail.TestHost.exe - <hatirmail_home> --history-check   (recent/saved searches file only, no window: runs on mono)
 //        HatirMail.TestHost.exe <att_corpus.json> <hatirmail_home> --attach-check   ("Eki aç" file rules, no window: runs on mono)
+//        HatirMail.TestHost.exe - <hatirmail_home> --exclude-check   ("Klasörleri hariç tut" rules, no window: runs on mono)
 // Exit code 0 = pass. Prints only event names, counts, ids and timings (no mail text).
 using System;
 using System.Collections;
@@ -50,6 +54,7 @@ namespace HatirMail
             var settings = Settings.Load();
             if (args[2] == "--history-check") return HistoryCheck(settings) ? 0 : 1;
             if (args[2] == "--attach-check") return AttachCheck(args[0], settings) ? 0 : 1;
+            if (args[2] == "--exclude-check") return ExcludeCheck(settings) ? 0 : 1;
             if (args[2] == "--layout-check") return LayoutCheck(new JsonSource(args[0]), settings, args.Length > 3 ? args[3] : null);
             string expected = args.Length > 3 && !args[3].StartsWith("--") ? args[3] : null;
             bool index = args.Contains("--index"), expectKeyword = args.Contains("--expect-keyword"), expectIncomplete = args.Contains("--expect-incomplete");
@@ -59,6 +64,10 @@ namespace HatirMail
             if (budget >= 0) settings.SearchIndexBudgetS = budget;
             if (keepMin >= 0) settings.KeepAliveMin = keepMin;
             var src = new JsonSource(args[0]);
+            string excludeId = Array.IndexOf(args, "--exclude") > 0 ? args[Array.IndexOf(args, "--exclude") + 1] : null;
+            int expectRemoved = Opt(args, "--expect-removed", -1);
+            bool excludeOk = excludeId == null;
+            if (excludeId != null) settings.ExcludedFolders[src.Stores()[0].Key] = new List<string> { excludeId }; // in memory only
             var form = new SearchForm(new SlowSource(src, Opt(args, "--read-delay-ms", 0)), settings) { ShowInTaskbar = false, WindowState = FormWindowState.Minimized };
             var launched = new List<string>();
             form.Launch = p => launched.Add(p); // no program starts in the test: record the path
@@ -110,6 +119,14 @@ namespace HatirMail
                     // The window starts one status check on load (index state: no scan, no mail reading). --warm waits
                     // for the model preload after it (ModelStateChanged "ready").
                     if (started) return;
+                    if (excludeId != null && reason == "ok")
+                    {
+                        // The status check at the window open deleted the excluded folder from the index (begin.exclude).
+                        bool listed = form.ListedFolderIds().Contains(excludeId);
+                        excludeOk = (expectRemoved >= 0 ? form.LastExcludedRemoved == expectRemoved : form.LastExcludedRemoved > 0) &&
+                                    !listed && form.ExcludedFolderIds.Contains(excludeId);
+                        Console.WriteLine("exclude_purge folder={0} removed={1} listed={2} -> {3}", excludeId, form.LastExcludedRemoved, listed, excludeOk ? "ok" : "FAIL");
+                    }
                     if (reason != "ok") { Console.WriteLine("FAIL status " + reason); form.Shutdown(); }
                     else if (warmRuns == 0) startMain();
                     return;
@@ -158,6 +175,7 @@ namespace HatirMail
                 Report(form, src, settings, pids, reason, mode, stopAfter, expected, expectKeyword, expectIncomplete, ref code);
                 if (expectIncomplete && complete) { Console.WriteLine("FAIL: index complete after a time-limited search"); code = 1; }
                 if (maxMs >= 0 && ms > maxMs) { Console.WriteLine("FAIL: search took " + ms + " ms, limit " + maxMs); code = 1; }
+                if (!excludeOk) { Console.WriteLine("FAIL: excluded folder"); code = 1; }
                 if (openAtt != null)
                 {
                     // Report closed the window: the copy is gone.
@@ -306,7 +324,8 @@ namespace HatirMail
                 Console.WriteLine("preview_marked_chars=" + form.PreviewMarkedChars);
                 ok &= form.PreviewMarkedChars > 0;
                 ok &= HistoryUiCheck(form, settings, shotDir);
-                ok &= IndexDeleteCheck(form, settings); // last: it clears the results
+                ok &= IndexDeleteCheck(form, settings); // it clears the results
+                ok &= ExcludeUiCheck(form, settings, src.Stores()[0].Key, shotDir);
                 Console.WriteLine(ok ? "PASS" : "FAIL");
                 code = ok ? 0 : 1;
                 form.Shutdown();
@@ -621,6 +640,115 @@ namespace HatirMail
             bool ok = enabled && locked && deleted && kept && cleared;
             Console.WriteLine("index_delete button={0} locked={1} deleted={2} settings_and_searches_kept={3} results_cleared={4} -> {5}",
                               enabled, locked, deleted, kept, cleared, ok ? "ok" : "FAIL");
+            return ok;
+        }
+
+        // "Klasörleri hariç tut" rules (no window: runs on mono on the Mac too): the default names, subfolders, a saved choice
+        // in place of the defaults, the settings.json round trip, wrong types, a write error. Works in a new folder under the
+        // test home (HATIRMAIL_HOME points there for this check) and deletes it at the end. Prints flags only.
+        static bool ExcludeCheck(Settings settings)
+        {
+            string dir = Path.Combine(settings.Home, "exclude-check-" + Guid.NewGuid().ToString("N"));
+            string oldHome = Environment.GetEnvironmentVariable("HATIRMAIL_HOME");
+            bool ok = true;
+            Action<string, bool> check = (name, pass) => { Console.WriteLine("exclude_" + name + "=" + (pass ? "ok" : "FAIL")); ok &= pass; };
+            Func<string, string, FolderInfo> fi = (id, path) => new FolderInfo { Id = id, Path = path };
+            var all = new List<FolderInfo> {
+                fi("IN", "\\Gelen Kutusu"), fi("P", "\\Gelen Kutusu\\Özel"), fi("PA", "\\Gelen Kutusu\\Özel\\Alt"), fi("P2", "\\Gelen Kutusu\\Özel2"),
+                fi("SENT", "\\Gönderilmiş Öğeler"), fi("DEL", "\\Silinmiş Öğeler"), fi("DELSUB", "\\Silinmiş Öğeler\\Eski proje"),
+                fi("JUNK", "\\Önemsiz E-Posta"), fi("JUNK2", "\\Junk Email"), fi("OUT", "\\Giden Kutusu"), fi("DRAFT", "\\Taslaklar"),
+                fi("DRAFT2", "\\Drafts"), fi("SYNC", "\\Sync Issues\\Conflicts"), fi("ESIT", "\\Eşitleme Sorunları"), fi("DELE", "\\Deleted Items") };
+            Func<HashSet<string>, string> ids = h => string.Join(",", all.Where(x => h.Contains(x.Id)).Select(x => x.Id));
+            try
+            {
+                Directory.CreateDirectory(dir);
+                Environment.SetEnvironmentVariable("HATIRMAIL_HOME", dir);
+                var s = Settings.Load(); // no settings.json: no choice for any store
+                check("defaults", ids(s.ExcludedIn("S", all)) == "DEL,DELSUB,JUNK,JUNK2,OUT,DRAFT,DRAFT2,SYNC,ESIT,DELE");
+                s.ExcludedFolders["S"] = new List<string> { "P", "gone" };
+                // Özel and its subfolder, not Özel2; the choice replaces the defaults; an unknown id does nothing.
+                check("subfolders", ids(s.ExcludedIn("S", all)) == "P,PA");
+                check("other_store_defaults", s.ExcludedIn("T", all).Contains("DEL") && !s.ExcludedIn("T", all).Contains("P"));
+                s.ExcludedFolders["S"] = new List<string>();
+                check("empty_choice", s.ExcludedIn("S", all).Count == 0);
+                string sid = "0000000038A1BB1005E5101AA1BB08002B2A56C200006D737073742E646C6C00000000";
+                s.ExcludedFolders.Clear();
+                s.ExcludedFolders[sid] = new List<string> { "00000000AB12", "00000000CD34" };
+                s.ExcludedFolders["S2"] = new List<string>();
+                s.Threads = 6;
+                s.Save();
+                var r = Settings.Load();
+                check("roundtrip", r.ExcludedFolders.Count == 2 && r.ExcludedFolders[sid].SequenceEqual(s.ExcludedFolders[sid]) &&
+                                   r.ExcludedFolders["S2"].Count == 0 && r.Threads == 6 && !File.Exists(s.ConfigFile + ".tmp"));
+                File.WriteAllText(s.ConfigFile, "{\"threads\": 3, \"excluded_folders\": {\"A\": \"x\", \"B\": [1, \"f\", null, \"f\"], \"C\": []}}");
+                r = Settings.Load();
+                check("wrong_types", r.Threads == 3 && !r.ExcludedFolders.ContainsKey("A") && r.ExcludedFolders["B"].SequenceEqual(new[] { "f" }) &&
+                                     r.ExcludedFolders["C"].Count == 0);
+                File.WriteAllText(s.ConfigFile, "{\"threads\": 3, \"excluded_folders\": [\"x\"], \"keep_alive_min\": 5}");
+                r = Settings.Load();
+                check("wrong_container", r.ExcludedFolders.Count == 0 && r.Threads == 3 && r.KeepAliveMin == 5);
+                File.WriteAllText(s.ConfigFile, "{\"threads\": 4}"); // an older install: the default names apply
+                r = Settings.Load();
+                check("old_file_defaults", r.ExcludedFolders.Count == 0 && r.ExcludedIn("S", all).Contains("JUNK"));
+                // A write that fails (the file name is a folder) throws and leaves no temp file.
+                File.Delete(s.ConfigFile); Directory.CreateDirectory(s.ConfigFile);
+                bool threw = false;
+                try { s.Save(); } catch (IOException) { threw = true; } catch (UnauthorizedAccessException) { threw = true; }
+                check("write_error", threw && !File.Exists(s.ConfigFile + ".tmp"));
+            }
+            catch (Exception ex) { Console.WriteLine("exclude_check exception " + ex.GetType().Name + ": " + ex.Message); ok = false; }
+            finally
+            {
+                Environment.SetEnvironmentVariable("HATIRMAIL_HOME", oldHome);
+                if (Directory.Exists(dir)) Directory.Delete(dir, true); // only the folder made above
+            }
+            Console.WriteLine(ok ? "PASS" : "FAIL");
+            return ok;
+        }
+
+        // Ayarlar "Klasörleri hariç tut" in the window (Windows only: WinForms). The dialog at 2x (layout + screenshot): a
+        // checked folder checks its subfolders, a subfolder of a checked folder stays checked, Kaydet gives the top folder.
+        // SetExcluded (the code behind the dialog's Kaydet): the İndeks list loses the folder and its subfolders,
+        // settings.json has the choice, the results are cleared; a write error keeps the old choice. No worker here (empty
+        // home): the purge itself is checked by the worker unit tests and by "--exclude". The start state comes back.
+        static bool ExcludeUiCheck(SearchForm form, Settings settings, string storeId, string shotDir)
+        {
+            bool ok = true;
+            Action<string, bool> check = (name, pass) => { Console.WriteLine("exclude_ui_" + name + "=" + (pass ? "ok" : "FAIL")); ok &= pass; };
+            var all = form.AllFolders;
+            int inbox = all.FindIndex(f => f.Id == "F-INBOX"), proj = all.FindIndex(f => f.Id == "F-PROJ");
+            check("start", form.ListedFolderIds().Count == all.Count && form.ExcludedFolderIds.Count == 0 && form.ExcludeButtonEnabled && inbox >= 0 && proj >= 0);
+            using (var d = new SearchForm.ExcludeDialog(form, "Sentetik Posta (Atlas Örnek)", all, new HashSet<string>())
+                           { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) })
+            {
+                d.Show(form); Application.DoEvents();
+                bool fits = Check(d, "exclude-dialog");
+                d.Box.SetItemChecked(inbox, true);
+                bool sub = d.Box.GetItemChecked(proj);
+                d.Box.SetItemChecked(proj, false); // refused: the checked parent excludes it
+                bool kept = d.Box.GetItemChecked(proj);
+                var chosen = d.Chosen();
+                if (shotDir != null) Shot(d.Body, Path.Combine(shotDir, "ui-exclude-dialog.png"));
+                d.Box.SetItemChecked(inbox, false);
+                bool off = !d.Box.GetItemChecked(proj);
+                check("dialog", fits && sub && kept && chosen.SequenceEqual(new[] { "F-INBOX" }) && off);
+                d.Close();
+            }
+            form.Feed("search", Results()); // results of the old scope: cleared by the change
+            bool set = form.SetExcluded(new List<string> { "F-INBOX" });
+            var listed = form.ListedFolderIds();
+            List<string> v;
+            check("apply", set && !listed.Contains("F-INBOX") && !listed.Contains("F-PROJ") && listed.Count == all.Count - 2 && form.ResultCount == 0 &&
+                           Settings.Load().ExcludedFolders.TryGetValue(storeId, out v) && v.SequenceEqual(new[] { "F-INBOX" }) &&
+                           form.StatusText.StartsWith("Klasör seçimi kaydedildi") && !File.Exists(settings.ConfigFile + ".tmp"));
+            File.Delete(settings.ConfigFile); Directory.CreateDirectory(settings.ConfigFile);
+            bool failed = !form.SetExcluded(new List<string>()) && form.StatusText.StartsWith("Klasör seçimi kaydedilemedi") &&
+                          form.ExcludedFolderIds.Contains("F-INBOX") && !form.ListedFolderIds().Contains("F-INBOX") && !File.Exists(settings.ConfigFile + ".tmp");
+            Directory.Delete(settings.ConfigFile);
+            check("write_error", failed);
+            check("restore", form.SetExcluded(new List<string>()) && form.ListedFolderIds().Count == all.Count && form.ExcludedFolderIds.Count == 0);
+            settings.ExcludedFolders.Remove(storeId);
+            if (File.Exists(settings.ConfigFile)) File.Delete(settings.ConfigFile);
             return ok;
         }
 

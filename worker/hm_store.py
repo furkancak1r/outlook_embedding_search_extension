@@ -155,6 +155,33 @@ class Store:
         self._vocab = None
         return rowid
 
+    def purge_folders(self, folder_ids):
+        """Delete the mails of folders that the user excluded from the index (Ayarlar), with their keyword rows,
+        chunks, attachments, and the attachment text and vectors that no other mail uses. The text must also leave the
+        file: FTS5 keeps deleted words in its segments until a merge (optimize), and SQLite keeps freed pages until
+        VACUUM (10-20 probe: VACUUM without optimize left the words in the file). meta 'compact' makes the next session
+        do an interrupted VACUUM again. Returns the number of deleted mails."""
+        ids = list(folder_ids)
+        rows = []
+        if ids:
+            with self.tx():
+                rows = [r for (r,) in self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
+                    f"SELECT rowid FROM items WHERE folder_id IN ({_in(len(ids))})", ids)]
+                for r in rows:
+                    self.delete_item(r)
+                self.db.execute(f"DELETE FROM folders WHERE id IN ({_in(len(ids))})", ids)  # nosemgrep: sqlalchemy-execute-raw-query
+                if rows:
+                    self.gc_att_texts()
+                    self.gc_vectors()
+                    self.db.execute("INSERT INTO fts(fts) VALUES('optimize')")
+                    self.db.execute("INSERT INTO fts_att(fts_att) VALUES('optimize')")
+                    self.set_meta("compact", True)
+        if self.meta("compact"):
+            self.db.execute("VACUUM")
+            self.set_meta("compact", False)
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # the old pages leave the WAL file too
+        return len(rows)
+
     def gc_vectors(self):
         return self.db.execute("DELETE FROM vectors WHERE text_hash NOT IN (SELECT text_hash FROM chunks)").rowcount
 

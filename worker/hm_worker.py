@@ -8,6 +8,9 @@ The Outlook add-in starts this process only on a user action (window open, Ara, 
   index:  the same without a query and without a time limit ("İndekslemeyi başlat"). No results.
   status: hello(coverage) -> done. No scan, no reading, no model.
 
+Every mode first deletes the mails of the folders in begin.exclude (excluded in Ayarlar) from the index file
+(Store.purge_folders); done.excluded_removed counts them. An excluded folder in the scope is a protocol error.
+
 Keep-alive (begin.keep_alive_s > 0, while the search window is open): after done(ok) the process waits for the next
 begin and keeps the model in memory. preload (status mode): load the model after done when the scope has vectors
 (model events). stdin closed or no begin within keep_alive_s: exit 0. Missing/0: exit after the session (old behavior).
@@ -160,7 +163,12 @@ def session(args, inbox, out, ctx, enc, begin=None):
     ctx["keep_alive"] = max(0.0, min(float(begin.get("keep_alive_s") or 0), 86400.0))
     store_info, folders = begin["store"], begin["folders"]
     scope = [f["id"] for f in folders]
-    if not scope:
+    # Folders that the user excluded from the index (Ayarlar): their mails leave the index at the session start, and
+    # they are never in a scope. A status check may have an empty scope (every folder excluded): it only deletes.
+    exclude = [str(x) for x in begin.get("exclude") or []]
+    if set(exclude) & set(scope):
+        raise ProtocolError("excluded folder in scope")
+    if not scope and mode != "status":
         raise ProtocolError("empty folder scope")
     query = str(begin.get("query") or "").strip()[:500] if mode == "search" else ""
     now = datetime.fromisoformat(begin.get("now") or datetime.now().isoformat(timespec="seconds"))
@@ -177,21 +185,25 @@ def session(args, inbox, out, ctx, enc, begin=None):
                              model_rev=MODEL_REVISION, mode=mode, coverage=ctx["cov"](), model_ready="e" in enc)
     if mode == "status":  # coverage only; an unknown store gets no index file
         store = Store(str(path) if path.exists() else ":memory:", MODEL_REVISION)
-        ctx.update(store=store, cov=lambda: store.coverage(scope, atts=atts_on))
+        ctx["store"] = store
+        removed = store.purge_folders(exclude)
+        ctx["cov"] = lambda: store.coverage(scope, atts=atts_on)
         hello()
         # Preload only when a search can use the model: the scope has vectors.
         ctx["preload"] = bool(begin.get("preload")) and ctx["cov"]()["embedded"] > 0
-        return {"mode": mode}
+        return {"mode": mode, "excluded_removed": removed}
     # Attachment reading: only when the add-in offers it (it saves the files) and gives its own temp folder.
     att_dir = begin.get("att_dir") if atts_on else None
     if att_dir and not os.path.isdir(att_dir):
         raise ProtocolError("att_dir missing")
     path.parent.mkdir(parents=True, exist_ok=True)
     store = Store(str(path), MODEL_REVISION)
+    ctx["store"] = store
+    removed = store.purge_folders(exclude)
     with store.tx():
         store.set_meta("store_name", store_info.get("name", ""))
         stats["att_crashed"] = store.fail_stale()
-    ctx.update(store=store, cov=lambda: store.coverage(scope, atts=atts_on))
+    ctx["cov"] = lambda: store.coverage(scope, atts=atts_on)
     cov = ctx["cov"]
     hello()
     last_cov = [time.perf_counter()]
@@ -328,7 +340,7 @@ def session(args, inbox, out, ctx, enc, begin=None):
         timing["final_s"] = round(time.perf_counter() - t, 3)
         out.send("results", stage="final", coverage=cov(), **res)
     timing["total_s"] = round(time.perf_counter() - t0, 3)
-    return {"mode": mode, "timing": timing, "stats": stats, "model_loaded": "e" in enc}
+    return {"mode": mode, "timing": timing, "stats": stats, "model_loaded": "e" in enc, "excluded_removed": removed}
 
 
 ATT_BATCH = 4  # files saved by the add-in per request

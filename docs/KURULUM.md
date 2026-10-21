@@ -86,8 +86,9 @@ Pencerede üç sekme vardır: **Ara**, **İndeks** ve **Ayarlar**.
 ### İlk kullanım: indeksi oluşturun
 
 1. **HatırMail ile Ara** düğmesine basın.
-2. **İndeks** sekmesini açın. Posta kutusunu ve klasörleri seçin. Silinmiş Öğeler, Önemsiz E-Posta, Taslaklar ve Giden
-   Kutusu varsayılan olarak seçili değildir.
+2. **İndeks** sekmesini açın. Posta kutusunu ve klasörleri seçin. Silinmiş Öğeler, Önemsiz E-Posta, Taslaklar, Giden
+   Kutusu ve Eşitleme Sorunları varsayılan olarak indeksten hariç tutulur ve bu listede görünmez. Hariç tutulan
+   klasörleri **Ayarlar** sekmesinden değiştirebilirsiniz ("Klasörleri indeksten hariç tutma" bölümüne bakın).
 3. **İndekslemeyi başlat**'a basın. Çubuklar okunan postaların, anlam indeksinin ve eklerin yüzdesini gösterir. Altında o
    anki aşama ve o aşamada kalan süre yazar.
 4. İndeksleme sürerken Outlook'u kullanabilirsiniz. Pencereyi simge durumuna küçültebilirsiniz.
@@ -187,12 +188,40 @@ varsayılana döndürür (kaydetmek için yine **Kaydet**'e basın).
 | Aramada indeksleme (sn) | `search_index_budget_s` | 20 | 0–600 | Ara'ya basınca yeni postaları indekslemek için en çok bu kadar beklenir. 0: aramada indeksleme yok |
 | Yapay zekâyı hazır tut (dk) | `keep_alive_min` | 10 | 0–120 | Pencere açıkken model son işten sonra bu kadar dakika bellekte kalır; aramalar modeli beklemez. Pencere kapanınca model de kapanır. 0: her aramada model yeniden yüklenir ve iş bitince bellek boşalır |
 | Ek dosyalarının içinde de ara | `attachments` | true | – | Eklerin içeriğini oku ve ara. Kapalıysa yalnız ek adları aranır |
+| Klasörleri hariç tut… | `excluded_folders` | (yok) | – | Posta kutusu kimliği → hariç tutulan klasör kimlikleri. Bir posta kutusu için kayıt yoksa varsayılan klasörler hariç tutulur (aşağıya bakın). Boş liste: hiçbir klasör hariç tutulmaz |
 | (yalnız dosyada) | `idle_timeout_s` | 300 | 30–3600 | Eklenti yanıt vermezse arama işleminin kendini kapatma süresi |
 | (yalnız dosyada) | `session_timeout_s` | 7200 | ≥ 60 | Bir aramanın en uzun süresi. Tam indekslemenin süre sınırı yoktur; 15 dakika hiç ilerleme olmazsa durur |
 
 Eski `embed_budget_s` ayarı artık kullanılmaz. Var olan bir `settings.json` kurulumda değiştirilmez; yeni
 `search_index_budget_s` yoksa varsayılan 20 saniye, `keep_alive_min` yoksa varsayılan 10 dakika geçerlidir.
 İşlemci çekirdeği ya da bellek sınırı değişince hazır tutulan model kapanır; sonraki iş yeni değerlerle başlar.
+
+### Klasörleri indeksten hariç tutma
+
+Gizli tutmak istediğiniz postaları aramanın dışında bırakabilirsiniz. Hariç tutulan bir klasör indekslenmez ve
+aranmaz. İndeks de küçülür.
+
+> **Dikkat:** Kaydettiğinizde hariç tutulan klasörlerin postaları, ek metinleri ve anlam indeksi bu bilgisayardaki
+> indeksten silinir. Klasörü sonra yeniden eklerseniz bu postalar baştan indekslenir. Outlook'taki postalarınız
+> hiçbir durumda değişmez.
+
+1. **İndeks** sekmesinde posta kutusunu seçin.
+2. **Ayarlar** sekmesinde **Klasörleri hariç tut…**'a basın (kısayol: Alt+H). Arama ya da indeksleme sürerken düğme
+   kapalıdır.
+3. Açılan pencerede indekslenmeyecek klasörleri işaretleyin. Bir klasörü işaretlerseniz alt klasörleri de işaretlenir.
+4. **Kaydet**'e basın. Durum çubuğunda indeksten kaç posta silindiği yazar.
+
+- Varsayılan olarak Silinmiş Öğeler, Önemsiz E-Posta, Taslaklar, Giden Kutusu ve Eşitleme Sorunları hariç tutulur.
+  Bir posta kutusu için seçim yapıp kaydettiğinizde varsayılanlar yerine sizin seçiminiz geçerli olur.
+- Hariç tutulan bir klasörün sonradan oluşturulan alt klasörleri de hariç tutulur. Outlook'ta sildiğiniz bir klasör
+  Silinmiş Öğeler'in altına taşınır; Silinmiş Öğeler hariç tutuluyorsa o klasör de indeksten çıkar.
+- Bir postayı hariç tutulan klasöre taşırsanız posta sonraki aramada ya da indekslemede indeksten silinir.
+- Seçim `settings.json` dosyasında saklanır. **İndeksi sil** seçimi silmez.
+- Daha önce İndeks sekmesinde Silinmiş Öğeler gibi bir varsayılan klasörü elle işaretleyip indekslediyseniz bu sürümle
+  o klasörün postaları pencere ilk açıldığında indeksten silinir. İndekslemek için klasörün işaretini **Klasörleri
+  hariç tut…** penceresinde kaldırın.
+- Silme, indeks dosyasını da sıkıştırır (SQLite VACUUM). Büyük bir indekste bu birkaç saniye sürebilir ve geçici
+  olarak indeks dosyası kadar boş disk alanı gerekir.
 
 ### İndeksi silme
 
@@ -236,6 +265,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail
   kapanınca silinir. O sırada bir program kopyayı açık tutuyorsa kopya, pencere bir sonraki açılışta silinir.
 - İndeksi istediğiniz zaman **Ayarlar** sekmesindeki **İndeksi sil** düğmesiyle silebilirsiniz ("İndeksi silme"
   bölümüne bakın).
+- Gizli tutmak istediğiniz klasörleri **Ayarlar** > **Klasörleri hariç tut…** ile indeksin dışında bırakabilirsiniz.
+  Bu klasörlerin metni indeks dosyasından da silinir ("Klasörleri indeksten hariç tutma" bölümüne bakın).
 - Son ve kayıtlı aramalar yalnız `%LOCALAPPDATA%\HatirMail\data\searches.json` dosyasında düz metin olarak durur. Bu
   dosya hiçbir yere gönderilmez ve günlüğe yazılmaz. **Aramalar ▼** menüsünden silebilirsiniz ("Son aramalar ve kayıtlı
   aramalar" bölümüne bakın).

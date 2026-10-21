@@ -3,6 +3,7 @@
 The attachment messages (8a–8c) are optional: an add-in without `attachments` in `begin` gets the same sequence as before.
 `mode` is optional: without it the worker runs a search without a time limit (the behavior of the first version).
 `keep_alive_s` and `preload` are optional: without them the process runs one session and exits.
+`exclude` is optional: without it no folder is deleted from the index.
 
 The add-in starts `python.exe -I -B -X utf8 hm_worker.py --data <dir> --model <dir> --threads N` with the
 environment variable `HM_SESSION=<48 hex chars>`. Both sides send one UTF-8 JSON object per line on the
@@ -14,7 +15,16 @@ child's stdin (add-in → worker, key `op`) and stdout (worker → add-in, key `
 |---|---|---|
 | `search` | "Ara" | Scan, read new mails, keyword results, attachments + embedding (time-limited by `index_budget_s`), final results |
 | `index` | "İndekslemeyi başlat" (İndeks tab) | Scan, read, attachments, embedding without a time limit. No query, no results |
-| `status` | Window open, store change, "Durumu yenile", attachment setting changed | `hello` with the coverage, then `done`. No scan, no mail reading, no model. An unknown store gets no index file; an index of an older version is upgraded first (as in every mode) |
+| `status` | Window open, store change, "Durumu yenile", attachment setting changed, excluded folders saved | `hello` with the coverage, then `done`. No scan, no mail reading, no model. An unknown store gets no index file; an index of an older version is upgraded first (as in every mode). The scope can be empty (every folder excluded) |
+
+## Excluded folders (`begin.exclude`)
+
+`begin.exclude` (all modes): folder entry ids that the user excluded from the index (Ayarlar "Klasörleri hariç tut…",
+subfolders included by the add-in). At the session start, before `hello`, the worker deletes the mails of these folders
+(keyword rows, chunks, attachments), their folder rows, the attachment text and vectors that no other mail uses, then
+runs FTS5 `optimize`, `VACUUM` and `wal_checkpoint(TRUNCATE)`, so the text also leaves the file. `done.excluded_removed`
+= the number of deleted mails (0 when there was nothing to delete). A folder in both `exclude` and `folders`:
+`done/error` "excluded folder in scope". An empty `folders` list is allowed only in `status` mode.
 
 ## Keep-alive (one process, many sessions)
 
@@ -40,7 +50,7 @@ no limit. When the scope has no semantic index yet, a time-limited search loads 
 
 | # | Direction | Message | Notes |
 |---|---|---|---|
-| 1 | → | `{"op":"begin","session","mode","query","now","top_k","index_budget_s","idle_timeout_s","keep_alive_s","preload","attachments","att_dir","store":{"id","name"},"folders":[{"id","path"}]}` | `session` must equal `HM_SESSION`, else `done/error` and no file is written. Unknown `mode`: `done/error`. `attachments`: true when the add-in can save attachments into `att_dir` (an existing folder) |
+| 1 | → | `{"op":"begin","session","mode","query","now","top_k","index_budget_s","idle_timeout_s","keep_alive_s","preload","attachments","att_dir","store":{"id","name"},"folders":[{"id","path"}],"exclude":[folder id…]}` | `session` must equal `HM_SESSION`, else `done/error` and no file is written. Unknown `mode`: `done/error`. `attachments`: true when the add-in can save attachments into `att_dir` (an existing folder) |
 | 2 | ← | `{"ev":"hello","pid","proto","index_version","model_rev","mode","coverage","model_ready"}` | `status` mode: `done` follows at once. `model_ready`: the model of this process is loaded already (keep-alive) |
 | 3 | → | `{"op":"manifest","folder","items":[[eid, last_mod, class, date], …],"final":bool}` | pages of ≤ 500 rows; `final` closes a folder. Changed mails are marked "to read" at once |
 | 4 | → | `{"op":"scan_done"}` | |
@@ -53,7 +63,7 @@ no limit. When the scope has no semantic index yet, a time-limited search loads 
 | 8c | ← | `{"ev":"progress","phase":"att",…}` | 8a–8c repeat until all pending attachments are read, or cancel/finish/time limit |
 | 9 | ← | `{"ev":"progress","phase":"model"|"embed",…}` | the model loads here (ONNX Runtime, in this process only), unless it is loaded already. `embed` counts model work: distinct chunks without a vector |
 | 10 | ← | `{"ev":"results","stage":"final","results":[…],"coverage","date_windows","terms","semantic","sem_stats"}` | search only: top 10 |
-| 11 | ← | `{"ev":"done","status":"ok"|"cancelled"|"error","mode","coverage","timing","stats","peak_rss_mb","model_loaded"}` | `coverage` = state after the work (also after cancel and error, when the index was open). Then the process exits, or waits for the next `begin` (keep-alive) |
+| 11 | ← | `{"ev":"done","status":"ok"|"cancelled"|"error","mode","coverage","timing","stats","peak_rss_mb","model_loaded","excluded_removed"}` | `coverage` = state after the work (also after cancel and error, when the index was open). Then the process exits, or waits for the next `begin` (keep-alive) |
 
 Progress events: `{"ev":"progress","phase":"scan"|"read"|"att"|"model"|"embed","done","total","rate","eta_s"[,"coverage"]}`.
 `rate` = items per second in this phase (embed: chunks per second, model load not counted). `eta_s` = seconds left in
