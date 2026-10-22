@@ -55,7 +55,7 @@ sh addin/build.sh >/dev/null
 cp build/addin/HatirMail.dll "$STAGE/addin/"
 
 # 6. scripts, docs, licenses
-cp packaging/win/install.ps1 packaging/win/uninstall.ps1 packaging/win/settings.json "$STAGE/"
+cp packaging/win/install.ps1 packaging/win/uninstall.ps1 packaging/win/firewall.ps1 packaging/win/settings.json "$STAGE/"
 cp docs/KURULUM.md "$STAGE/KURULUM.md"
 cp packaging/THIRD_PARTY_NOTICES.md "$STAGE/THIRD_PARTY_NOTICES.md"
 
@@ -66,3 +66,12 @@ rm -f "$OUT"
 ( cd build/pkg && zip -qrX "../../$OUT" HatirMail )
 shasum -a 256 "$OUT" | tee "$OUT.sha256"
 du -h "$OUT"
+
+# 8. setup program for users (one file; NSIS: brew install makensis). Set NO_EXE=1 to skip it.
+EXE=dist/HatirMail-Kurulum-$VER.exe
+if [ -z "${NO_EXE:-}" ]; then
+  rm -f "$EXE"
+  makensis -V2 -INPUTCHARSET UTF8 -DPKG="$PWD/build/pkg/HatirMail" -DOUTFILE="$PWD/$EXE" -DVERSION="$VER" packaging/win/HatirMail.nsi
+  shasum -a 256 "$EXE" | tee "$EXE.sha256"
+  du -h "$EXE"
+fi

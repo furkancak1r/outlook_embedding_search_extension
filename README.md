@@ -42,5 +42,5 @@ python3.13 eval/make_corpus.py                                           # deter
 .venv/bin/python eval/run_eval.py --att --model models/onnx --data tmp/eval-att --out reports/eval-att-mac.json
 .venv/bin/python eval/similar_eval.py --index-from tmp/eval --out reports/similar-mac.json   # "Benzerlerini bul"
 sh addin/build.sh                                                        # mono csc, .NET Framework 4.8 refs
-sh packaging/build_win.sh                                                # dist/HatirMail-win-x64-0.1.0.zip
+sh packaging/build_win.sh                                                # dist/HatirMail-win-x64-0.1.0.zip + HatirMail-Kurulum-0.1.0.exe (brew install makensis; NO_EXE=1 skips the exe)
 ```

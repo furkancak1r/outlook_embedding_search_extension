@@ -16,7 +16,39 @@ Yapay zekâ modeli yalnız sizin bilgisayarınızda çalışır. Postalarınız 
 | Bellek | Pencere açıkken arama işlemi yaklaşık 0,7 GB, indeksleme sırasında en çok yaklaşık 1,3 GB kullanır (2.19 ölçümü). Pencere kapanınca ya da "Yapay zekâyı hazır tut" süresi dolunca bu bellek boşalır |
 | Yetki | Yönetici yetkisi gerekmez. Kurulum yalnız sizin kullanıcı hesabınızı etkiler. |
 
-## Kurulum
+## Kurulum (kurulum programıyla, önerilen yol)
+
+> **Dikkat:** Kurulumdan önce Outlook'u kapatın. Outlook açıksa kurulum programı bekler ve kapatmanızı ister.
+
+1. `HatirMail-Kurulum-0.1.0.exe` dosyasını bilgisayarınıza kopyalayın ve çift tıklayın.
+2. Windows "Bilgisayarınız korundu" derse **Ek bilgi**'ye, sonra **Yine de çalıştır**'a basın. Kurulum programı imzasız
+   olduğu için Windows bu uyarıyı gösterir.
+3. **İleri**'ye basın. Kurulum birkaç dakika sürer.
+4. Kurulumun sonunda Windows yönetici onayı isterse **Evet**'e basın. Bu onay güvenlik duvarı kuralı içindir (aşağıya
+   bakın). **Hayır**'a basarsanız HatırMail yine çalışır, yalnız kural eklenmez.
+5. **Bitir**'e basın. Outlook'u açın. **Giriş** sekmesinde **HatırMail ile Ara** düğmesi görünür.
+
+Kurulum programı yalnız sizin kullanıcı hesabınıza kurar. Aşağıdaki PowerShell kurulumuyla aynı adımları yapar ve
+HatırMail'i Windows **Ayarlar** > **Uygulamalar** listesine ekler. UAC kapalıysa ve hesap yöneticiyse gereken makine
+kaydını ("UAC kapalı ve hesap yönetici ise" bölümü) kendisi yapar. Kurulum sırasında yaklaşık 2,5 GB boş disk alanı
+gerekir; kurulumdan sonra 1,3 GB kalır.
+
+**Güvenlik duvarı kuralı:** Kurulum programı Windows Güvenlik Duvarı'na bir kural ekler. Kural, HatırMail'in arama
+işleminin (`%LOCALAPPDATA%\HatirMail\runtime\python\python.exe`) internete bağlanmasını engeller. HatırMail ağ
+kullanmadığı için kuralla aynı biçimde çalışır. Outlook bu kuraldan etkilenmez. Kural eklemek yönetici onayı ister. UAC
+kapalıysa ve hesap yöneticiyse onay sorulmaz. Kurulum sonunda kuralı denetler: ayrıntılarda "Güvenlik duvarı kuralı
+etkin" yazar. Kural adı "HatırMail: arama işlemi internete çıkamaz"dır. Onu Windows Defender Güvenlik Duvarı > Gelişmiş
+ayarlar > Giden Kuralları altında görebilirsiniz. Onay vermediyseniz kuralı sonra eklemek için kurulum programını
+yeniden çalıştırın; indeksiniz korunur.
+
+Kaldırmak için: Windows **Ayarlar** > **Uygulamalar** > **HatırMail** > **Kaldır**. Yerel indeks, ayarlar ve kayıtlı
+aramalar da silinir. Güvenlik duvarı kuralı da silinir; bunun için Windows yeniden yönetici onayı isteyebilir. Outlook'taki
+postalarınız değişmez.
+
+**Yeni sürüme geçmek için** yeni kurulum programını eski sürümün üzerine çalıştırın. İndeksiniz, ayarlarınız ve kayıtlı
+aramalarınız korunur. Önce eski sürümü kaldırmayın: kaldırma indeksi siler ve ilk indeksleme yeniden gerekir.
+
+## Kurulum (zip paketi ve PowerShell ile)
 
 > **Dikkat:** Kayıt adımından önce Outlook'u kapatın. Outlook açıksa kurulum betiği durur ve hiçbir kayıt yazmaz.
 
@@ -41,6 +73,15 @@ Kurulum betiği şunları yapar:
 
 Kurulum betiği PATH, hizmet, zamanlanmış görev ya da Outlook profili değiştirmez. Sistem kayıt defterine (HKLM) yalnız
 `-Machine` seçeneğiyle yazar (aşağıya bakın).
+
+Kurulum betiği güvenlik duvarı kuralını eklemez. Kuralı eklemek için kurulumdan sonra şu komutu çalıştırın. Windows
+yönetici onayı ister:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail\firewall.ps1"
+```
+
+Çıktıda "check OK" yazıyorsa kural etkindir. `uninstall.ps1` kuralı da siler.
 
 ### UAC kapalı ve hesap yönetici ise
 
@@ -286,7 +327,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail
 ```
 
 - İndeksi, ayarları ve aramaları saklamak için: `... uninstall.ps1 -KeepData`
-- Kaldırma betiği yalnız kurulumun oluşturduğu kayıt anahtarlarını ve dosyaları siler.
+- Kaldırma betiği yalnız kurulumun oluşturduğu kayıt anahtarlarını, dosyaları ve bu kurulumun güvenlik duvarı kuralını
+  siler. Kural varsa Windows yönetici onayı ister.
 
 ## Gizlilik
 
@@ -308,6 +350,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail
   dosya hiçbir yere gönderilmez ve günlüğe yazılmaz. **Aramalar ▼** menüsünden silebilirsiniz ("Son aramalar ve kayıtlı
   aramalar" bölümüne bakın).
 - Eklenti ile arama işlemi arasında ağ bağlantısı yoktur; iletişim yalnız işlemin kendi giriş/çıkış kanallarıyla yapılır.
+- Kurulum programı, arama işleminin internete bağlanmasını Windows Güvenlik Duvarı kuralıyla da engeller ("Kurulum
+  (kurulum programıyla, önerilen yol)" bölümüne bakın).
+- İndeks şifreli değildir. Bilgisayar kaybolursa ya da çalınırsa postalarınızı ve indeksi korumak için disk şifrelemesini
+  (BitLocker ya da Cihaz şifrelemesi) açık tutun.
 
 ## Sorun giderme
 

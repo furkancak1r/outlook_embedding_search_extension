@@ -14,6 +14,7 @@
 | olefile (Outlook .msg) | 0.47 | BSD-2-Clause | https://pypi.org/project/olefile/ |
 | winrt-runtime and winrt-Windows.* (Windows OCR API binding) | 3.2.1 | MIT | https://pypi.org/project/winrt-runtime/ |
 | other transitive wheels | see runtime/requirements-win.lock | each wheel holds its license file | https://pypi.org/ |
+| NSIS (the setup program `HatirMail-Kurulum-*.exe` only: installer stub, plug-ins, LZMA module) | 3.13 | zlib/libpng; LZMA module: CPL-1.0 with the NSIS linking exception | https://nsis.sourceforge.io/ |
 
 OCR uses `Windows.Media.Ocr`, a part of Windows 10/11. No OCR model is in this package; Windows uses the OCR
 languages of the user profile.

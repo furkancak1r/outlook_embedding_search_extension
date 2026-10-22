@@ -6,13 +6,17 @@ Usage:
   -KeepData          : keep data\ (the local search index, recent and saved searches) and settings.json
   -SkipRegistration  : do not touch the registry (for isolated test installs)
   -Machine           : also remove the per-machine COM class entries (HKLM; needs administrator rights)
+  -ParentWindow      : window handle for the administrator prompt of the firewall step (the setup program gives it)
 The local index and the recent/saved searches are deleted unless -KeepData is given. Mail in Outlook is never touched.
+The firewall rule of this install folder (firewall.ps1) is removed; that asks for administrator approval (UAC) only
+when a rule is present.
 #>
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'HatirMail'),
     [switch]$KeepData,
     [switch]$SkipRegistration,
-    [switch]$Machine
+    [switch]$Machine,
+    [long]$ParentWindow = 0
 )
 $ErrorActionPreference = 'Stop'
 $clsid = '{2B7C9E14-6A3F-4D85-A1E2-7F90C4B3D215}'
@@ -37,7 +41,14 @@ if (-not (Test-Path (Join-Path $InstallDir 'addin\HatirMail.dll'))) { throw "not
 # Stop only HatirMail's own worker (python.exe inside this install folder), never other Python processes.
 $ownPy = Join-Path $InstallDir 'runtime\python\python.exe'
 Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -ieq $ownPy) } | Stop-Process -Force
-foreach ($d in 'app', 'addin', 'model', 'runtime', 'uninstall.ps1') {
+# The firewall rule: a rule that stays (no approval) names only the deleted python.exe; it does not stop the uninstall.
+$fw = Join-Path $InstallDir 'firewall.ps1'
+if (Test-Path $fw) {
+    & "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $fw `
+        -InstallDir $InstallDir -Remove -ParentWindow $ParentWindow
+    if ($LASTEXITCODE -ne 0) { Write-Warning 'The firewall rule is still present. Remove it in Windows Defender Firewall (group HatirMail).' }
+}
+foreach ($d in 'app', 'addin', 'model', 'runtime', 'uninstall.ps1', 'firewall.ps1') {
     $p = Join-Path $InstallDir $d
     if (Test-Path $p) { Remove-Item -LiteralPath $p -Recurse -Force }
 }

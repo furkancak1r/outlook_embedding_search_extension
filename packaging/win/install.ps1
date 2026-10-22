@@ -1,4 +1,4 @@
-<#
+﻿<#
 HatirMail per-user installer (no admin rights, no service, no scheduled task, no PATH change).
 
 What it does:
@@ -74,6 +74,7 @@ foreach ($d in 'app', 'addin', 'model') {
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'data') | Out-Null
 Copy-Item -LiteralPath (Join-Path $pkg 'uninstall.ps1') -Destination $InstallDir -Force
+Copy-Item -LiteralPath (Join-Path $pkg 'firewall.ps1') -Destination $InstallDir -Force   # the setup program runs it
 if (-not (Test-Path (Join-Path $InstallDir 'settings.json'))) {
     Copy-Item -LiteralPath (Join-Path $pkg 'settings.json') -Destination $InstallDir
 }
