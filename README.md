@@ -5,7 +5,7 @@ Klasik Outlook için yerel, hatırlamaya dayalı e-posta araması. Kullanıcı h
 PowerPoint, PDF, resimler Windows OCR ile, eklenmiş iletiler, zip). Yapay zekâ (EmbeddingGemma 2, yalnız 270M metin
 bileşeni, ONNX Runtime) kullanıcının kendi bilgisayarında çalışır. Model arama penceresi açılınca yüklenir ve
 pencere açıkken hazır kalır; aramalar modeli beklemez. Pencere kapanınca model de kapanır. Pencerede üç sekme vardır: **Ara**
-(gönderen, alıcı ve klasör filtreleriyle), **İndeks** (indeks durumu, yüzdeler, tam indeksleme ve yalnız değişiklikleri işleyen
+(gönderen, alıcı, klasör, tarih ve ek filtreleriyle; sütun başlığına tıklayarak sıralama), **İndeks** (indeks durumu, yüzdeler, tam indeksleme ve yalnız değişiklikleri işleyen
 **Güncelle**) ve **Ayarlar** (indekslenmeyecek klasörleri seçme dahil). Outlook'ta bir e-postaya sağ tıklayınca
 **Benzerlerini bul** aynı konudaki e-postaları listeler.
 

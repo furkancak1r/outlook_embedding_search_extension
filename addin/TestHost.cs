@@ -306,17 +306,24 @@ namespace HatirMail
                     Console.WriteLine("similar results={0} first={1} conf={2} model_loaded={3} ms={4} -> {5}", eids.Count, eids.FirstOrDefault(),
                                       eids.Count > 0 ? form.ResultConfidence(0) : "-", form.ModelLoaded, sw.ElapsedMilliseconds, ok ? "ok" : "FAIL");
                     if (!ok) { form.Shutdown(); return; }
-                    // The Gönderen filter of eid: every result has the sender of eid.
-                    sender = src.Read(eid, storeId, "")["sender"] as string;
-                    var box = form.FilterBoxes[0];
-                    int i = box.Items.Cast<object>().ToList().FindIndex(o => o.ToString().StartsWith(sender + " <"));
-                    if (i < 1) { Console.WriteLine("FAIL: sender not in the filter list"); form.Shutdown(); return; }
-                    box.SelectedIndex = i;
+                    // Right-click "Yalnız bu gönderenle yeniden ara" on the first result: "Benzerlerini bul" of eid again
+                    // (not a text search), with the Gönderen filter of that result: every result has its sender.
+                    form.SelectResult(0);
+                    sender = src.Read(eids[0], storeId, "")["sender"] as string;
+                    if (!form.FilterBySenderEnabled) { Console.WriteLine("FAIL: menu item off after a finished similar search"); form.Shutdown(); return; }
                     step = 3; sw.Restart();
-                    form.BeginInvoke((Action)(() => form.FindSimilar(eid, storeId, null)));
+                    form.BeginInvoke((Action)(() =>
+                    {
+                        form.ClickFilterBySender();
+                        // A similar search runs now: the menu item is off (a click would not start anything).
+                        bool off = form.SessionMode == "similar" && !form.FilterBySenderEnabled;
+                        Console.WriteLine("filter_by_sender_restart mode={0} item_off_while_running={1} -> {2}", form.SessionMode, off, off ? "ok" : "FAIL");
+                        if (!off) { form.Shutdown(); }
+                    }));
                     return;
                 }
-                bool fok = eids.Count > 0 && !eids.Contains(eid) && eids.All(e => (src.Read(e, storeId, "")["sender"] as string) == sender) && form.StatusText.Contains("Filtre: gönderen");
+                bool fok = eids.Count > 0 && !eids.Contains(eid) && eids.All(e => (src.Read(e, storeId, "")["sender"] as string) == sender) &&
+                           form.StatusText.Contains("Filtre: gönderen") && form.FilterBoxes[0].Text.StartsWith(sender + " <");
                 Console.WriteLine("similar_filtered results={0} same_sender={1} -> {2}", eids.Count, fok, fok ? "ok" : "FAIL");
                 code = fok ? 0 : 1;
                 Console.WriteLine(code == 0 ? "PASS" : "FAIL");
@@ -420,6 +427,8 @@ namespace HatirMail
                 form.Feed("index", new Dictionary<string, object> { {"ev", "progress"}, {"phase", "embed"}, {"done", 1234}, {"total", 4321}, {"rate", 0.6}, {"eta_s", 5148} });
                 form.Feed("search", Results());
                 form.Feed("status", Facets(false)); // filter lists with long names (layout)
+                // Second filter row at its widest: "Özel aralık…" shows the two date pickers (cleared after the screenshots).
+                form.FilterBoxes[3].SelectedIndex = form.FilterBoxes[3].Items.Count - 1; form.FilterBoxes[4].SelectedIndex = 3;
                 form.SetQuery("geçen ay Ahmet'ten gelen kargo faturası");
                 // The window is limited to this 1024x768 screen; its root panel is not (a child window): lay it out at
                 // the client size of the default window and of the minimum window at 192 DPI.
@@ -436,6 +445,7 @@ namespace HatirMail
                         if (shotDir != null) Shot(root, Path.Combine(shotDir, "ui-" + name + ".png"));
                     }
                 }
+                form.ClickClearFilters();
                 form.ShowTab(2);
                 ok &= SettingsRoundTrip(form, settings);
                 form.ShowTab(0);
@@ -454,6 +464,7 @@ namespace HatirMail
                 Console.WriteLine("preview_marked_chars=" + form.PreviewMarkedChars);
                 ok &= form.PreviewMarkedChars > 0;
                 ok &= FilterUiCheck(form);
+                ok &= SortUiCheck(form);
                 ok &= HistoryUiCheck(form, settings, shotDir);
                 ok &= IndexDeleteCheck(form, settings); // it clears the results
                 ok &= ExcludeUiCheck(form, settings, src.Stores()[0].Key, shotDir);
@@ -771,7 +782,56 @@ namespace HatirMail
             check("folder_unchecked", gone && texts(b[2]).Contains("Gelen Kutusu\\Projeler") && b[2].SelectedIndex == 0);
             foreach (var x in b) x.SelectedIndex = 0;
             form.FilteredScope(form.AllFolders, out f, out note);
-            check("none", note == "" && f["sender"] == null && f["recipient"] == null);
+            check("none", note == "" && f["sender"] == null && f["recipient"] == null && f["attach"] == null && !f.ContainsKey("date_from") &&
+                          !form.ClearFiltersEnabled);
+            // Tarih: a preset gives [from, to) in local time; "Özel aralık…" shows the two pickers, includes both days and
+            // turns a reversed range. Ek: the worker key. "Filtreleri temizle" sets every list back to "(tümü)".
+            Func<ComboBox, string, int> pick = (x, text) => texts(x).ToList().IndexOf(text);
+            int y = DateTime.Today.Year;
+            b[3].SelectedIndex = pick(b[3], "Geçen yıl"); b[4].SelectedIndex = pick(b[4], "PDF");
+            form.FilteredScope(form.AllFolders, out f, out note);
+            check("date_preset", (string)f["date_from"] == y - 1 + "-01-01T00:00:00" && (string)f["date_to"] == y + "-01-01T00:00:00" &&
+                                 (string)f["attach"] == "pdf" && note == " Filtre: tarih Geçen yıl, ek PDF." && form.ClearFiltersEnabled &&
+                                 !form.DatePickers[0].Visible);
+            b[3].SelectedIndex = pick(b[3], "Özel aralık…");
+            form.DatePickers[0].Value = new DateTime(2026, 9, 30); form.DatePickers[1].Value = new DateTime(2026, 9, 1);
+            form.FilteredScope(form.AllFolders, out f, out note);
+            check("date_custom", form.DatePickers.All(p => p.Visible) && (string)f["date_from"] == "2026-09-01T00:00:00" &&
+                                 (string)f["date_to"] == "2026-10-01T00:00:00" && note.Contains("tarih 01.09.2026–30.09.2026"));
+            b[0].SelectedIndex = 1;
+            form.ClickClearFilters();
+            form.FilteredScope(form.AllFolders, out f, out note);
+            check("clear", b.All(x => x.SelectedIndex == 0) && note == "" && !form.ClearFiltersEnabled && !form.DatePickers[0].Visible);
+            return ok;
+        }
+
+        // Result list: a click on a column header sorts by it (▲/▼ in the header), a second click turns the order; Güven
+        // = the worker's order; new results keep the chosen column. Right-click "Yalnız bu gönderenle yeniden ara": off
+        // for a sender that is not in the Gönderen list, and off before the first search or "Benzerlerini bul" (no worker
+        // in this check: nothing ran, so nothing to repeat and the filter stays). The menu run itself: SimilarRun step 3.
+        static bool SortUiCheck(SearchForm form)
+        {
+            bool ok = true;
+            Action<string, bool> check = (name, pass) => { Console.WriteLine("sort_ui_" + name + "=" + (pass ? "ok" : "FAIL")); ok &= pass; };
+            Func<string> order = () => string.Join(",", Enumerable.Range(0, form.ResultCount).Select(form.ResultEid));
+            check("start", order() == "E1,E2,E3" && form.HeaderText(3) == "Güven ▼");
+            form.ClickHeader(2);
+            bool dateDesc = order() == "E3,E1,E2" && form.HeaderText(2) == "Tarih ▼" && form.HeaderText(3) == "Güven";
+            form.ClickHeader(2);
+            check("date", dateDesc && order() == "E2,E1,E3" && form.HeaderText(2) == "Tarih ▲");
+            form.ClickHeader(0);
+            check("subject", order() == "E3,E2,E1" && form.HeaderText(0) == "Konu ▲");
+            form.Feed("search", Results());
+            check("kept_for_new_results", order() == "E3,E2,E1");
+            form.ClickHeader(3);
+            check("relevance", order() == "E1,E2,E3" && form.HeaderText(3) == "Güven ▼");
+            form.Feed("status", Facets(false)); // Ahmet Demir is in the Gönderen list again
+            form.SelectResult(2);
+            bool noChoice = !form.SelectedHasSenderChoice; // Ayşe Kaya: not in the list
+            form.SelectResult(0);
+            bool hasChoice = form.SelectedHasSenderChoice, enabled = form.FilterBySenderEnabled;
+            form.ClickFilterBySender();
+            check("filter_by_sender_off_before_a_run", noChoice && hasChoice && !enabled && form.FilterBoxes[0].SelectedIndex == 0);
             return ok;
         }
 
@@ -1078,9 +1138,12 @@ namespace HatirMail
 
         static Dictionary<string, object> Results()
         {
+            // Dates and senders differ: the sort check (SortUiCheck) orders by them. sender_key of Ahmet Demir = his key in Facets().
+            var dates = new Dictionary<string, string> { {"E1", "2026-09-12T09:41:00"}, {"E2", "2026-08-20T14:05:00"}, {"E3", "2026-10-01T08:30:00"} };
             Func<string, string, string, string, string, ArrayList, ArrayList, Dictionary<string, object>> r = (eid, subj, who, conf, snip, hl, why) =>
                 new Dictionary<string, object> { {"eid", eid}, {"subject", subj}, {"sender", who}, {"recipients", "Furkan Çakır; Muhasebe Ekibi"},
-                    {"date", "2026-09-12T09:41:00"}, {"confidence", conf}, {"why", why}, {"snippet", snip}, {"hl", hl},
+                    {"sender_key", who == "Ahmet Demir" ? "ahmet.demir@hizli-lojistik.example" : "ayse@x.example"},
+                    {"date", dates[eid]}, {"confidence", conf}, {"why", why}, {"snippet", snip}, {"hl", hl},
                     {"hl_subject", new ArrayList { new ArrayList { 0, 5 }, new ArrayList { 6, 8 } }}, {"attachments", "Fatura_2026-09.pdf; İrsaliye.xlsx"},
                     {"match_attachment", null} };
             string s1 = "Merhaba Furkan Bey, eylül ayına ait kargo faturası ekte gönderilmiştir. Toplam tutar 4.250 TL olup ödeme vadesi 30 gündür. İyi çalışmalar.";

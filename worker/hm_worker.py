@@ -178,10 +178,19 @@ def session(args, inbox, out, ctx, enc, begin=None):
     if not scope and mode != "status":
         raise ProtocolError("empty folder scope")
     query = str(begin.get("query") or "").strip()[:500] if mode == "search" else ""
-    # Ara tab filters (sender, recipient: keys from done.facets). The folder filter is the scope itself.
+    # Ara tab filters (sender, recipient: keys from done.facets; date_from, date_to: ISO local time; attach: "yes", "no"
+    # or a file type). The folder filter is the scope itself.
     filters = begin.get("filters") or {}
     if not isinstance(filters, dict) or any(not isinstance(v, (str, type(None))) for v in filters.values()):
         raise ProtocolError("bad filters")
+    if filters.get("attach") and filters["attach"] not in hm_search.ATT_FILTERS:
+        raise ProtocolError("bad filters")
+    for k in ("date_from", "date_to"):
+        if filters.get(k):  # the same text form as items.sent_at: the worker compares the text
+            try:
+                filters[k] = datetime.fromisoformat(filters[k]).replace(tzinfo=None).isoformat(timespec="seconds")
+            except ValueError:
+                raise ProtocolError("bad filters") from None
     now = datetime.fromisoformat(begin.get("now") or datetime.now().isoformat(timespec="seconds"))
     top_k = max(1, min(int(begin.get("top_k", 10)), 50))
     # Search mode: attachment reading and embedding stop index_budget_s after the read phase starts (the add-in

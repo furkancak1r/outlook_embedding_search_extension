@@ -325,12 +325,12 @@ class Store:
             return set()
 
     def people(self, folder_ids=None):
-        """[(rowid, sender, sender_addr, recipients)] of the folder scope (None: the whole file)."""
+        """[(rowid, sender, sender_addr, recipients, sent_at, attachments)] of the folder scope (None: the whole file)."""
+        cols = "SELECT rowid, sender, sender_addr, recipients, sent_at, attachments FROM items"
         if folder_ids is None:
-            return self.db.execute("SELECT rowid, sender, sender_addr, recipients FROM items").fetchall()
+            return self.db.execute(cols).fetchall()
         return self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
-            f"SELECT rowid, sender, sender_addr, recipients FROM items WHERE folder_id IN ({_in(len(folder_ids))})",
-            list(folder_ids)).fetchall()
+            f"{cols} WHERE folder_id IN ({_in(len(folder_ids))})", list(folder_ids)).fetchall()
 
     def scope_rowids(self, folder_ids):
         return {r for (r,) in self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query

@@ -23,11 +23,23 @@ child's stdin (add-in → worker, key `op`) and stdout (worker → add-in, key `
 
 ## Filters (`begin.filters`, modes `search` and `similar`)
 
-`{"sender": key or null, "recipient": key or null}` (not an object, or a value that is not a string or null: `done/error`
-"bad filters"). Keys are the first values of `done.facets` rows. The worker keeps only the mails of the scope with this
-sender (`fold(sender_addr or sender)`) and with this name among the recipients (To and CC split at `;`, quotes removed,
-folded). Keyword candidates are the best 400 BM25 rows of the file inside the allowed set; the semantic z statistics use
-the unfiltered scope, so the confidence labels do not change. The folder filter of the Ara tab is the scope (`folders`).
+`{"sender": key or null, "recipient": key or null, "date_from": iso or null, "date_to": iso or null, "attach": kind or
+null}`. Each key is optional. These values give `done/error` "bad filters": not an object, a value that is not a string
+or null, a date that `datetime.fromisoformat` cannot read, an `attach` value that is not in the list below. Keys are the
+first values of `done.facets` rows. The worker keeps only the mails of the scope that match every filter:
+
+- `sender`: `fold(sender_addr or sender)` is the key.
+- `recipient`: the key is one of the recipient names (To and CC split at `;`, quotes removed, folded).
+- `date_from`, `date_to`: `date_from <= sent_at < date_to`. Both are local time; an offset is dropped (the add-in writes
+  `sent_at` in local time). A mail without a date does not match a date filter.
+- `attach`: `yes` (at least one attachment name), `no` (none), or a type: `excel` (.xlsx .xlsm .xls .csv), `pdf`, `word`
+  (.docx .doc .docm .rtf), `powerpoint` (.pptx .ppt .pptm), `image` (.png .jpg .jpeg .gif .bmp .tif .tiff .heic),
+  `archive` (.zip .rar .7z). The worker reads `items.attachments`: inline logos and pictures (image001.png) are not in it.
+
+Keyword candidates are the best 400 BM25 rows of the file inside the allowed set; the semantic z statistics use the
+unfiltered scope, so the confidence labels do not change. The folder filter of the Ara tab is the scope (`folders`).
+Every result has `sender_key` (the `sender` filter key of its sender): the add-in uses it for "Yalnız bu gönderenle
+yeniden ara".
 
 `done.facets` (all modes, when the index file is open): `{"senders": [[key, name, address, mails], …], "recipients": [[key,
 name, mails], …]}` of the whole index file, most mails first, at most 1000 each.
@@ -73,7 +85,7 @@ no limit. When the scope has no semantic index yet, a time-limited search loads 
 
 | # | Direction | Message | Notes |
 |---|---|---|---|
-| 1 | → | `{"op":"begin","session","mode","query","now","top_k","index_budget_s","idle_timeout_s","keep_alive_s","preload","attachments","att_dir","store":{"id","name"},"folders":[{"id","path"}],"exclude":[folder id…],"filters":{"sender","recipient"},"similar_eid"}` | `session` must equal `HM_SESSION`, else `done/error` and no file is written. Unknown `mode`: `done/error`. `attachments`: true when the add-in can save attachments into `att_dir` (an existing folder) |
+| 1 | → | `{"op":"begin","session","mode","query","now","top_k","index_budget_s","idle_timeout_s","keep_alive_s","preload","attachments","att_dir","store":{"id","name"},"folders":[{"id","path"}],"exclude":[folder id…],"filters":{"sender","recipient","date_from","date_to","attach"},"similar_eid"}` | `session` must equal `HM_SESSION`, else `done/error` and no file is written. Unknown `mode`: `done/error`. `attachments`: true when the add-in can save attachments into `att_dir` (an existing folder) |
 | 2 | ← | `{"ev":"hello","pid","proto","index_version","model_rev","mode","coverage","model_ready"}` | `status` mode: `done` follows at once. `model_ready`: the model of this process is loaded already (keep-alive) |
 | 3 | → | `{"op":"manifest","folder","items":[[eid, last_mod, class, date], …],"final":bool}` | pages of ≤ 500 rows; `final` closes a folder. Changed mails are marked "to read" at once |
 | 4 | → | `{"op":"scan_done"}` | |
@@ -98,8 +110,10 @@ results for the indexed part). If stdin closes, the worker exits (code 3). Vecto
 
 ## Result object
 
-`eid, folder, subject, sender, recipients, date, snippet, hl, hl_subject, match_attachment, match_att_index,
+`eid, folder, subject, sender, sender_key, recipients, date, snippet, hl, hl_subject, match_attachment, match_att_index,
 match_att_member, attachments, score, confidence ("yüksek"|"orta"|"zayıf"|"kelime"), why[], cos, z, coverage`
+
+`sender_key`: the `begin.filters.sender` key of the sender of this mail (see "Filters").
 
 `hl`, `hl_subject`: `[[start, length], …]` of the query words in `snippet` and `subject`, in UTF-16 code units (the add-in
 marks them in the preview). `match_attachment`: the attachment name when the snippet comes from an attachment, else `null`.

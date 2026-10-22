@@ -185,17 +185,37 @@ sonraki aramaya ya da İndeks sekmesine kalır. Arama kutusunun altındaki satı
 İndeksleme sürerken **Ara**'ya basarsanız HatırMail önce indekslemeyi durdurmak için onay ister. Aynı anda yalnız bir
 arama işlemi çalışır.
 
-### Gönderen, alıcı ve klasör filtreleri
+### Filtreler: gönderen, alıcı, klasör, tarih ve ek
 
-Arama kutusunun altında üç açılır liste vardır: **Gönderen** (Alt+N), **Alıcı** (Alt+L) ve **Klasör** (Alt+S).
+Arama kutusunun altında iki satır açılır liste vardır:
 
-1. Kimden geldiğini, kime gittiğini ya da hangi klasörde olduğunu hatırladığınız değeri seçin.
+- Birinci satır: **Gönderen** (Alt+N), **Alıcı** (Alt+L), **Klasör** (Alt+S).
+- İkinci satır: **Tarih** (Alt+T), **Ek** (Alt+K) ve **Filtreleri temizle** düğmesi (Alt+F).
+
+1. Hatırladığınız değeri seçin.
 2. **Ara**'ya basın. Sonuçlarda yalnız bu filtrelere uyan postalar görünür. Durum çubuğu etkin filtreleri yazar.
 
-- Listeler indeksteki postalardan dolar (en sık 1.000 kişi). Yeni bir kişi ilk indekslemeden ya da Güncelle'den sonra
-  görünür.
+- **Tarih:** Son 7 gün, Son 30 gün, Son 3 ay, Son 12 ay, Bu yıl, Geçen yıl ya da **Özel aralık…**. Özel aralıkta iki
+  tarih kutusu görünür; iki gün de aralığa dahildir. Tarih filtresi kesindir: aralık dışındaki posta görünmez. Sorguya
+  yazdığınız tarih ("geçen ay") ise yalnız sıralamayı etkiler.
+- **Ek:** Ekli, Eksiz, Excel, PDF, Word, PowerPoint, Resim ya da Zip, RAR. Postadaki ek adlarına bakılır. Metnin içine
+  yapıştırılmış resimler (image001.png gibi) sayılmaz.
+- Gönderen ve alıcı listeleri indeksteki postalardan dolar (en sık 1.000 kişi). Yeni bir kişi ilk indekslemeden ya da
+  Güncelle'den sonra görünür.
 - Klasör listesi İndeks sekmesinde işaretli klasörlerdir. Alt klasörler ayrı satırdır ve seçilen klasöre dahil değildir.
-- "(tümü)" filtreyi kaldırır. Filtre değişince arama kendiliğinden yeniden başlamaz; **Ara**'ya basın.
+- "(tümü)" o filtreyi kaldırır. **Filtreleri temizle** hepsini kaldırır. Filtre değişince arama kendiliğinden yeniden
+  başlamaz; **Ara**'ya basın.
+
+### Sonuçları sıralama ve sağ tık menüsü
+
+- Sonuç listesinde bir sütun başlığına tıklayın: liste o sütuna göre sıralanır. Aynı başlığa yeniden tıklarsanız sıra
+  tersine döner. Başlıktaki ▼ ya da ▲ işareti geçerli sıralamayı gösterir.
+- İlk sıralama **Güven ▼**'dir: en uygun sonuç en üsttedir. **Tarih**'e tıklayınca en yeni posta üste gelir.
+- Seçtiğiniz sıralama sonraki aramalarda da geçerlidir.
+- Bir sonuca sağ tıklayın (ya da klavyede Menü tuşuna basın): **Outlook'ta aç**, **Eki aç** (yalnız eşleşme bir ekteyse),
+  **Konuyu kopyala** ve **Yalnız bu gönderenle yeniden ara**. Sonuncusu Gönderen filtresini seçer ve son aramayı
+  yeniden başlatır: Ara ile başlattığınız aramayı aynı sorguyla, **Benzerlerini bul**'u aynı e-postayla. Arama sürerken
+  bu komut kapalıdır.
 
 ### Benzerlerini bul
 

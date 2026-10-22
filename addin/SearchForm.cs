@@ -41,8 +41,18 @@ namespace HatirMail
         readonly Label scopeLine = new Label();
         // Filters (Ara tab): sender and recipient values from the worker (done.facets), folder = a checked İndeks folder.
         readonly ComboBox senderBox = new ComboBox(), recipientBox = new ComboBox(), folderBox = new ComboBox();
+        // Second filter row: date range (presets or "Özel aralık…" with two date pickers) and attachments; worker keys
+        // date_from / date_to (ISO local time, to = exclusive) and attach.
+        readonly ComboBox dateBox = new ComboBox(), attFilterBox = new ComboBox();
+        readonly DateTimePicker dateFrom = new DateTimePicker(), dateTo = new DateTimePicker();
+        readonly Label dateDash = new Label { Text = "–", AutoSize = true, Anchor = AnchorStyles.Left };
+        readonly Button clearFiltersBtn;
         bool fillingFilters;
         readonly ListView list = new ListView();
+        readonly ContextMenuStrip resultMenu = new ContextMenuStrip();
+        static readonly string[] ResultColumns = { "Konu", "Kişi", "Tarih", "Güven", "Neden" };
+        int sortCol = 3; bool sortDesc = true; // 3 "Güven" descending = the worker's order (relevance); kept for new results
+        Action repeatLast; // the last search or "Benzerlerini bul" that started; null = none yet (result menu)
         readonly RichTextBox preview = new RichTextBox();
         readonly Panel previewBox = new Panel();                         // the attachment bar and the preview
         readonly TableLayoutPanel attBar = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 1, AutoSize = true, Visible = false };
@@ -111,6 +121,7 @@ namespace HatirMail
             refreshBtn = MakeButton("Durumu &yenile", false);
             saveBtn = MakeButton("&Kaydet", true); defaultsBtn = MakeButton("&Varsayılan değerler", false);
             deleteBtn = MakeButton("İndeksi &sil", false); excludeBtn = MakeButton("Klasörleri &hariç tut…", false);
+            clearFiltersBtn = MakeButton("&Filtreleri temizle", false);
 
             // Header band
             var title = new Label { Text = "HatırMail", AutoSize = true, Dock = DockStyle.Top, Font = new Font("Segoe UI Semibold", 15f * pt), UseCompatibleTextRendering = false,
@@ -168,21 +179,78 @@ namespace HatirMail
                 box.DropDownStyle = ComboBoxStyle.DropDownList; box.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top; box.Margin = new Padding(0, S(2), 0, S(2));
                 box.AccessibleName = f.Item3; box.MaxDropDownItems = 20;
                 box.Items.Add(Choice.All); box.SelectedIndex = 0;
-                box.SelectedIndexChanged += (s, e) => { if (!fillingFilters && session == null) SetStatus("Filtre değişti. Uygulamak için Ara'ya basın."); };
+                box.SelectedIndexChanged += (s, e) => FilterChanged();
                 frow.Controls.Add(box, col++, 0);
             }
             frow.RowStyles.Add(new RowStyle(SizeType.Absolute, senderBox.PreferredHeight + senderBox.Margin.Vertical)); // after Add: the font of the row
+            // Second filter row: Tarih [list] [from – to: only for "Özel aralık…"]  Ek [list]  [Filtreleri temizle].
+            var frow2 = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 8, RowCount = 1, AutoSize = true, Padding = new Padding(0, S(2), 0, 0), Font = Font };
+            foreach (var w in new[] { SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.AutoSize, SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize })
+                frow2.ColumnStyles.Add(w == SizeType.Percent ? new ColumnStyle(SizeType.Percent, 50F) : new ColumnStyle(SizeType.AutoSize));
+            foreach (var x in new[] { Tuple.Create(dateBox, "Tarih filtresi"), Tuple.Create(attFilterBox, "Ek filtresi") })
+            {
+                var box = x.Item1;
+                box.DropDownStyle = ComboBoxStyle.DropDownList; box.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top; box.Margin = new Padding(0, S(2), 0, S(2));
+                box.AccessibleName = x.Item2; box.MaxDropDownItems = 20;
+                box.Items.Add(Choice.All);
+                box.SelectedIndexChanged += (s, e) => FilterChanged();
+            }
+            foreach (var c in new[] { "7d|Son 7 gün", "30d|Son 30 gün", "3m|Son 3 ay", "12m|Son 12 ay", "year|Bu yıl", "lastyear|Geçen yıl", "custom|Özel aralık…" })
+                dateBox.Items.Add(new Choice { Key = c.Split('|')[0], Text = c.Split('|')[1] });
+            foreach (var c in new[] { "yes|Ekli", "no|Eksiz", "excel|Excel", "pdf|PDF", "word|Word", "powerpoint|PowerPoint", "image|Resim", "archive|Zip, RAR" })
+                attFilterBox.Items.Add(new Choice { Key = c.Split('|')[0], Text = c.Split('|')[1] });
+            fillingFilters = true; // the start values are not a user change
+            dateBox.SelectedIndex = attFilterBox.SelectedIndex = 0;
+            dateFrom.Value = DateTime.Today.AddMonths(-1); dateTo.Value = DateTime.Today;
+            fillingFilters = false;
+            foreach (var p in new[] { dateFrom, dateTo })
+            {
+                p.Format = DateTimePickerFormat.Custom; p.CustomFormat = "dd.MM.yyyy"; p.Visible = false;
+                p.Width = TextRenderer.MeasureText("30.09.2026", Font).Width + S(40); p.Anchor = AnchorStyles.Left | AnchorStyles.Top; p.Margin = new Padding(S(6), S(2), 0, S(2));
+                p.ValueChanged += (s, e) => FilterChanged();
+            }
+            dateFrom.AccessibleName = "Tarih filtresi: başlangıç"; dateTo.AccessibleName = "Tarih filtresi: bitiş (dahil)";
+            dateDash.Margin = new Padding(S(4), 0, 0, 0); dateDash.Visible = false;
+            clearFiltersBtn.Anchor = AnchorStyles.Left | AnchorStyles.Top; clearFiltersBtn.Margin = new Padding(S(10), S(1), 0, S(1)); clearFiltersBtn.Enabled = false;
+            clearFiltersBtn.Click += (s, e) => ClearFilters();
+            frow2.Controls.Add(new Label { Text = "&Tarih:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, S(4), 0) }, 0, 0);
+            frow2.Controls.Add(dateBox, 1, 0); frow2.Controls.Add(dateFrom, 2, 0); frow2.Controls.Add(dateDash, 3, 0); frow2.Controls.Add(dateTo, 4, 0);
+            frow2.Controls.Add(new Label { Text = "E&k:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(S(10), 0, S(4), 0) }, 5, 0);
+            frow2.Controls.Add(attFilterBox, 6, 0); frow2.Controls.Add(clearFiltersBtn, 7, 0);
+            // As in the first row: the row height comes from the real control heights (after Add: the font of the row).
+            frow2.RowStyles.Add(new RowStyle(SizeType.Absolute, new[] { dateBox.PreferredHeight + dateBox.Margin.Vertical, dateFrom.PreferredHeight + dateFrom.Margin.Vertical,
+                                                                         clearFiltersBtn.PreferredSize.Height + clearFiltersBtn.Margin.Vertical }.Max()));
             Wrap(scopeLine); scopeLine.Padding = new Padding(0, S(4), 0, S(8));
             scopeLine.Cursor = Cursors.Hand; scopeLine.Click += (s, e) => tabs.SelectedTab = tabIndex;
             list.Dock = DockStyle.Fill; list.View = View.Details; list.FullRowSelect = true; list.MultiSelect = false;
             list.HideSelection = false; list.AccessibleName = "Sonuçlar";
             // "Neden" fits its longest form ("kelime 1/2, anlam 0.61, ekte, tarih dışı"); Konu takes the rest.
-            list.Columns.Add("Konu", S(300)); list.Columns.Add("Kişi", S(140)); list.Columns.Add("Tarih", S(115));
-            list.Columns.Add("Güven", S(65)); list.Columns.Add("Neden", S(265));
+            // "Güven" is wider than its texts: the sort arrow (▲/▼) is part of the header text.
+            var widths = new[] { 300, 140, 115, 80, 265 };
+            for (int i = 0; i < ResultColumns.Length; i++) list.Columns.Add(ResultColumns[i], S(widths[i]));
             list.Resize += (s, e) => FitColumns(list);
             list.SelectedIndexChanged += (s, e) => ShowPreview();
             list.DoubleClick += (s, e) => OpenSelected();
             list.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) OpenSelected(); };
+            // A click on a column header sorts by it; a second click turns the order. Güven = the worker's order.
+            list.ColumnClick += (s, e) => HeaderClick(e.Column);
+            list.ListViewItemSorter = new ResultOrder(this);
+            ShowSortArrow();
+            // Right-click on a result: open, open the attachment, copy the subject, filter by its sender.
+            resultMenu.Font = Font;
+            resultMenu.Items.Add("Outlook'ta &aç", null, (s, e) => OpenSelected());
+            resultMenu.Items.Add("&Eki aç", null, (s, e) => OpenAttachment());
+            resultMenu.Items.Add("&Konuyu kopyala", null, (s, e) => CopySubject());
+            resultMenu.Items.Add("&Yalnız bu gönderenle yeniden ara", null, (s, e) => FilterBySelectedSender());
+            resultMenu.Opening += (s, e) =>
+            {
+                var r = SelectedResult();
+                if (r == null) { e.Cancel = true; return; }
+                resultMenu.Items[1].Visible = AttIndex(r) > 0;
+                resultMenu.Items[3].Enabled = CanFilterBySender(r);
+            };
+            list.ContextMenuStrip = resultMenu;
+            Disposed += (s, e) => resultMenu.Dispose();
             // Plain text only (never RTF from a mail), read-only, no links.
             preview.Dock = DockStyle.Bottom; preview.Height = S(190); preview.ReadOnly = true; preview.DetectUrls = false;
             preview.BorderStyle = BorderStyle.FixedSingle; preview.BackColor = SystemColors.Window; preview.AccessibleName = "Önizleme";
@@ -199,9 +267,10 @@ namespace HatirMail
             previewBox.Dock = DockStyle.Bottom; previewBox.Height = S(160);
             previewBox.Controls.Add(preview); previewBox.Controls.Add(attBar);
             attBar.TabIndex = 0; preview.TabIndex = 1;
-            qrow.TabIndex = 0; frow.TabIndex = 1; list.TabIndex = 2; previewBox.TabIndex = 3;
+            qrow.TabIndex = 0; frow.TabIndex = 1; frow2.TabIndex = 2; list.TabIndex = 3; previewBox.TabIndex = 4;
             tabSearch.Controls.Add(list); tabSearch.Controls.Add(new Splitter { Dock = DockStyle.Bottom, Height = S(6), TabStop = false });
-            tabSearch.Controls.Add(previewBox); tabSearch.Controls.Add(scopeLine); tabSearch.Controls.Add(hint); tabSearch.Controls.Add(frow); tabSearch.Controls.Add(qrow);
+            tabSearch.Controls.Add(previewBox); tabSearch.Controls.Add(scopeLine); tabSearch.Controls.Add(hint); tabSearch.Controls.Add(frow2);
+            tabSearch.Controls.Add(frow); tabSearch.Controls.Add(qrow);
             Launch = path => { using (Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, ErrorDialog = true, ErrorDialogParentHandle = Handle })) { } };
 
             // ---- İndeks: store, bars, live phase, start/stop, folders with their state
@@ -800,18 +869,146 @@ namespace HatirMail
             if (!now.SetEquals(sel.Select(f => f.Id))) Fill(folderBox, sel.Select(f => new Choice { Key = f.Id, Text = f.Path.TrimStart('\\') }));
         }
 
-        /// <summary>The scope and the filters of a search: the folder filter narrows the checked folders, the sender and
-        /// recipient keys go to the worker (begin.filters). note: the active filters for the status text ("" = none).</summary>
+        /// <summary>The scope and the filters of a search: the folder filter narrows the checked folders; the sender and
+        /// recipient keys, the date range and the attachment filter go to the worker (begin.filters). note: the active
+        /// filters for the status text ("" = none).</summary>
         public List<FolderInfo> FilteredScope(List<FolderInfo> sel, out Dictionary<string, object> filters, out string note)
         {
             string fid = KeyOf(folderBox);
             if (fid != null) sel = sel.Where(f => f.Id == fid).ToList();
-            filters = new Dictionary<string, object> { {"sender", KeyOf(senderBox)}, {"recipient", KeyOf(recipientBox)} };
+            filters = new Dictionary<string, object> { {"sender", KeyOf(senderBox)}, {"recipient", KeyOf(recipientBox)}, {"attach", KeyOf(attFilterBox)} };
+            DateTime? from, to;
+            string dates = DateRange(out from, out to);
+            if (from != null) filters["date_from"] = from.Value.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
+            if (to != null) filters["date_to"] = to.Value.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
             var parts = new List<string>();
             foreach (var b in new[] { Tuple.Create("gönderen", senderBox), Tuple.Create("alıcı", recipientBox), Tuple.Create("klasör", folderBox) })
                 if (KeyOf(b.Item2) != null) parts.Add(b.Item1 + " " + b.Item2.Text);
+            if (dates != null) parts.Add("tarih " + dates);
+            if (KeyOf(attFilterBox) != null) parts.Add("ek " + attFilterBox.Text);
             note = parts.Count == 0 ? "" : " Filtre: " + string.Join(", ", parts) + ".";
             return sel;
+        }
+
+        /// <summary>The date filter as [from, to) in local time (null = open end) and its text for the status line (null = no
+        /// date filter). The presets count from today at the search start. "Özel aralık…": both days included; a start after
+        /// the end is read as the same range the other way round.</summary>
+        string DateRange(out DateTime? from, out DateTime? to)
+        {
+            from = to = null;
+            var t = DateTime.Today;
+            switch (KeyOf(dateBox))
+            {
+                case "7d": from = t.AddDays(-6); break; // today and the 6 days before
+                case "30d": from = t.AddDays(-29); break;
+                case "3m": from = t.AddMonths(-3); break;
+                case "12m": from = t.AddMonths(-12); break;
+                case "year": from = new DateTime(t.Year, 1, 1); break;
+                case "lastyear": from = new DateTime(t.Year - 1, 1, 1); to = new DateTime(t.Year, 1, 1); break;
+                case "custom":
+                    DateTime a = dateFrom.Value.Date, b = dateTo.Value.Date;
+                    if (a > b) { var x = a; a = b; b = x; }
+                    from = a; to = b.AddDays(1);
+                    return a.ToString("dd.MM.yyyy", TR) + "–" + b.ToString("dd.MM.yyyy", TR);
+                default: return null;
+            }
+            return dateBox.Text;
+        }
+
+        ComboBox[] AllFilterBoxes { get { return new[] { senderBox, recipientBox, folderBox, dateBox, attFilterBox }; } }
+
+        /// <summary>A filter changed (by the user or by a refill): the date pickers show only for "Özel aralık…", the
+        /// clear button only with a filter. The search does not start again by itself.</summary>
+        void FilterChanged()
+        {
+            dateFrom.Visible = dateTo.Visible = dateDash.Visible = KeyOf(dateBox) == "custom";
+            clearFiltersBtn.Enabled = AllFilterBoxes.Any(b => b.SelectedIndex > 0);
+            if (!fillingFilters && session == null) SetStatus("Filtre değişti. Uygulamak için Ara'ya basın.");
+        }
+
+        void ClearFilters()
+        {
+            fillingFilters = true;
+            foreach (var b in AllFilterBoxes) b.SelectedIndex = 0;
+            fillingFilters = false;
+            FilterChanged();
+            senderBox.Focus();
+        }
+
+        // ------------------------------------------------------------------ result list: sort, shortcut menu
+        /// <summary>A click on a column header: sort by it; a second click turns the order. First order: dates and Güven
+        /// descending (newest, most relevant first), texts A to Z.</summary>
+        void HeaderClick(int col) { SortResults(col, col == sortCol ? !sortDesc : col == 2 || col == 3); }
+
+        void SortResults(int col, bool desc)
+        {
+            sortCol = col; sortDesc = desc;
+            list.Sort();
+            ShowSortArrow();
+            if (list.SelectedItems.Count > 0) list.SelectedItems[0].EnsureVisible();
+        }
+
+        void ShowSortArrow()
+        {
+            for (int i = 0; i < ResultColumns.Length; i++)
+                list.Columns[i].Text = ResultColumns[i] + (i == sortCol ? (sortDesc ? " ▼" : " ▲") : "");
+        }
+
+        /// <summary>Order of the result list. Güven = the worker's order (rank: relevance); Tarih = the mail date; the other
+        /// columns by their text in the Turkish alphabet. Equal values keep the worker's order.</summary>
+        sealed class ResultOrder : IComparer
+        {
+            static readonly StringComparer Text = StringComparer.Create(TR, true);
+            readonly SearchForm f;
+            public ResultOrder(SearchForm f) { this.f = f; }
+            static int Rank(ListViewItem it) { object v; return ((Dictionary<string, object>)it.Tag).TryGetValue("rank", out v) ? (int)v : 0; }
+            static DateTime When(ListViewItem it)
+            {
+                DateTime d;
+                return DateTime.TryParse(((Dictionary<string, object>)it.Tag)["date"] as string, CultureInfo.InvariantCulture, DateTimeStyles.None, out d) ? d : DateTime.MinValue;
+            }
+            public int Compare(object x, object y)
+            {
+                ListViewItem a = (ListViewItem)x, b = (ListViewItem)y;
+                int c = f.sortCol == 2 ? When(a).CompareTo(When(b))
+                      : f.sortCol == 3 ? Rank(b).CompareTo(Rank(a)) // ascending = the least relevant first
+                      : Text.Compare(a.SubItems[f.sortCol].Text, b.SubItems[f.sortCol].Text);
+                if (f.sortDesc) c = -c;
+                return c != 0 ? c : Rank(a).CompareTo(Rank(b));
+            }
+        }
+
+        Dictionary<string, object> SelectedResult() { return list.SelectedItems.Count > 0 ? (Dictionary<string, object>)list.SelectedItems[0].Tag : null; }
+
+        void CopySubject()
+        {
+            string s = Str(SelectedResult() ?? new Dictionary<string, object>(), "subject");
+            if (string.IsNullOrEmpty(s)) return;
+            try { Clipboard.SetText(s); SetStatus("Konu panoya kopyalandı."); }
+            catch (ExternalException) { SetStatus("Konu kopyalanamadı. Pano başka bir programda açık olabilir; yeniden deneyin."); }
+        }
+
+        /// <summary>The Gönderen filter value of a result (results.sender_key), or null: an older worker, or a sender that is
+        /// not in the list (the list has the 1,000 senders with the most mails).</summary>
+        Choice SenderChoice(Dictionary<string, object> r)
+        {
+            string key = r != null ? Str(r, "sender_key") : null;
+            return string.IsNullOrEmpty(key) ? null : senderBox.Items.OfType<Choice>().FirstOrDefault(c => c.Key == key);
+        }
+
+        /// <summary>"Yalnız bu gönderenle yeniden ara": the last search or "Benzerlerini bul" again (repeatLast), with the
+        /// Gönderen filter of the result. Off while a search runs (it would not start) and before the first run.</summary>
+        bool SearchRuns { get { return session != null && (session.Mode == "search" || session.Mode == "similar"); } }
+
+        bool CanFilterBySender(Dictionary<string, object> r) { return SenderChoice(r) != null && repeatLast != null && !SearchRuns; }
+
+        void FilterBySelectedSender()
+        {
+            if (SearchRuns) { SetStatus("Arama sürüyor. Bitince yeniden deneyin ya da Durdur'a basın."); return; }
+            var c = SenderChoice(SelectedResult());
+            if (c == null || repeatLast == null) return;
+            senderBox.SelectedItem = c;
+            repeatLast();
         }
 
         // ------------------------------------------------------------------ sessions (one worker at a time)
@@ -843,6 +1040,7 @@ namespace HatirMail
             EventNames.Clear(); modelSeen = false;
             lastStoreId = st.Id;
             Begin(new WorkerSession(this, source, settings, "search", st.Id, st.Name, sel, q) { Filters = filters });
+            repeatLast = () => { query.Text = q; StartSearch(); };
             SetStatus(ModelState == "loading" ? "Arama başladı. Yapay zekâ modeli hazırlanıyor (pencere açılınca başladı)…"
                     : ModelState == "ready" ? "Arama başladı. Yapay zekâ hazır." : "Arama başladı…");
         }
@@ -893,6 +1091,7 @@ namespace HatirMail
             EventNames.Clear(); modelSeen = false;
             lastStoreId = st.Id;
             Begin(new WorkerSession(this, source, settings, "similar", st.Id, st.Name, sel, "") { Filters = filters, SimilarEid = eid });
+            repeatLast = () => FindSimilar(eid, storeId, folderId);
             SetStatus("Benzer e-postalar aranıyor…");
         }
 
@@ -1173,8 +1372,10 @@ namespace HatirMail
             var results = ((ArrayList)ev["results"]).Cast<Dictionary<string, object>>().ToList();
             list.BeginUpdate();
             list.Items.Clear();
+            int rank = 0;
             foreach (var r in results)
             {
+                r["rank"] = rank++; // the worker's order: the Güven column sorts by it, equal values keep it
                 string date = r["date"] as string ?? "";
                 DateTime dt;
                 if (DateTime.TryParse(date, CultureInfo.InvariantCulture, DateTimeStyles.None, out dt)) date = dt.ToString("dd.MM.yyyy HH:mm", TR);
@@ -1184,6 +1385,7 @@ namespace HatirMail
                 if ((r["confidence"] as string) == "zayıf") it.ForeColor = SystemColors.GrayText;
                 list.Items.Add(it);
             }
+            list.Sort(); // the column that the user chose stays the order of new results
             list.EndUpdate();
             FitColumns(list); // a vertical scroll bar makes the list narrower
             var dw = ev.ContainsKey("date_windows") ? ((ArrayList)ev["date_windows"]).Cast<string>().ToList() : new List<string>();
@@ -1483,7 +1685,15 @@ namespace HatirMail
         public string SessionMode { get { return session != null ? session.Mode : null; } }
         public string LastPhase; public int LastDone, LastTotal; public bool LastSemantic; // test hooks: last progress / results
         public Dictionary<string, object> LastDoneStats;                                  // test hook: stats of the last done
-        public ComboBox[] FilterBoxes { get { return new[] { senderBox, recipientBox, folderBox }; } } // test hook
+        public ComboBox[] FilterBoxes { get { return AllFilterBoxes; } } // test hook: Gönderen, Alıcı, Klasör, Tarih, Ek
+        public DateTimePicker[] DatePickers { get { return new[] { dateFrom, dateTo }; } }    // test hooks: filters, sorting, result menu
+        public bool ClearFiltersEnabled { get { return clearFiltersBtn.Enabled; } }
+        public void ClickClearFilters() { ClearFilters(); }
+        public void ClickHeader(int col) { HeaderClick(col); }
+        public string HeaderText(int col) { return list.Columns[col].Text; }
+        public bool SelectedHasSenderChoice { get { return SenderChoice(SelectedResult()) != null; } }
+        public bool FilterBySenderEnabled { get { return CanFilterBySender(SelectedResult()); } }
+        public void ClickFilterBySender() { FilterBySelectedSender(); }
         public void SetFolderChecked(string id, bool on)                                 // test hook: a click on the İndeks list
         {
             foreach (ListViewItem it in folderList.Items) if (((FolderInfo)it.Tag).Id == id) it.Checked = on;

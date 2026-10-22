@@ -151,6 +151,15 @@ Outlook.exe (Klasik)
   - Worker Türkçe katlamayla eşleştirir ("ÇAKIR" = "Çakır").
   - Filtre aday kümesini daraltır. Güven etiketi filtreli ve filtresiz aramada aynıdır (z istatistiği tüm kapsamdan).
   - Filtre değişince arama yeniden başlamaz; durum çubuğu Ara'ya basmayı söyler.
+  - **Tarih ve Ek filtreleri (22 Ekim):** ikinci filtre satırı. Tarih hazır aralıklar ya da "Özel aralık…" (iki tarih
+    kutusu, iki gün dahil) verir; eklenti bunu yerel saatle `[date_from, date_to)` olarak gönderir. Bu kesin bir
+    süzgeçtir; sorgudaki tarih sözcükleri ise yalnız sıralamayı etkiler. Ek filtresi `items.attachments` içindeki ek
+    adlarına bakar (ekli, eksiz ya da dosya türü). Metne gömülü küçük resimler bu listede yoktur.
+- **Sonuç listesi (22 Ekim):** sütun başlığına tıklamak listeyi o sütuna göre sıralar, ikinci tıklama sırayı çevirir.
+  Güven sütunu worker'ın sırasıdır (`rank`). Seçilen sıralama yeni sonuçlarda da kalır. Sağ tık menüsü: Outlook'ta aç, Eki
+  aç, Konuyu kopyala, Yalnız bu gönderenle yeniden ara (sonuçtaki `sender_key` ile Gönderen filtresi). Bu komut son
+  başlayan işi yineler: metin aramasını aynı sorguyla, Benzerlerini bul'u aynı postayla. Arama ya da benzer arama
+  sürerken ve henüz hiç iş başlamadıysa kapalıdır.
 - **Benzerlerini bul (Outlook'ta bir postaya sağ tık, worker modu `similar`):** postanın indeksteki vektörleriyle arar.
   Model yüklenmez, sorgu yazılmaz, tarama ve posta okuma yoktur.
   - Kaynak vektör, gövde parçalarının ortalamasıdır. Aday, en iyi parçasıyla puanlanır. Kaynak posta sonuçlarda yoktur.

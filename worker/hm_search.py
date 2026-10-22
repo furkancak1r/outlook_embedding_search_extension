@@ -198,14 +198,36 @@ def recipient_names(recipients):
     return [x for x in (p.strip().strip("'\"").strip() for p in (recipients or "").split(";")) if x]
 
 
+# Ek filter of the Ara tab (begin.filters.attach): "yes", "no", or a file type. items.attachments holds the names without
+# inline logos (hm_index.NOISE_ATTACH). ponytail: a pasted screenshot with an inline name (image001.png) is not in the
+# names, so "image" and "yes" do not see it.
+ATT_TYPES = {"excel": (".xlsx", ".xlsm", ".xls", ".csv"), "pdf": (".pdf",), "word": (".docx", ".doc", ".docm", ".rtf"),
+             "powerpoint": (".pptx", ".ppt", ".pptm"),
+             "image": (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".heic"), "archive": (".zip", ".rar", ".7z")}
+ATT_FILTERS = {"yes", "no", *ATT_TYPES}
+
+
+def att_match(attachments, kind):
+    names = [n.strip().lower() for n in (attachments or "").split(";") if n.strip()]
+    if kind == "yes":
+        return bool(names)
+    if kind == "no":
+        return not names
+    return any(n.endswith(ATT_TYPES[kind]) for n in names)
+
+
 def allowed(store, folder_ids, filters):
-    """Mail rowids of the scope that match begin.filters {"sender": key, "recipient": key} (keys as facets() gives them),
-    or None without a filter."""
-    s, r = (filters or {}).get("sender"), (filters or {}).get("recipient")
-    if not s and not r:
+    """Mail rowids of the scope that match begin.filters, or None without a filter. sender, recipient: keys as facets()
+    gives them; date_from, date_to: sent_at >= date_from and < date_to (ISO text, local time, as the add-in writes
+    sent_at; a mail without a date does not match); attach: a value of ATT_FILTERS."""
+    f = filters or {}
+    s, r, d0, d1, att = (f.get(k) for k in ("sender", "recipient", "date_from", "date_to", "attach"))
+    if not (s or r or d0 or d1 or att):
         return None
-    return {row for row, name, addr, rec in store.people(folder_ids)
-            if (not s or sender_key(name, addr) == s) and (not r or r in {fold(n) for n in recipient_names(rec)})}
+    return {row for row, name, addr, rec, sent, atts in store.people(folder_ids)
+            if (not s or sender_key(name, addr) == s) and (not r or r in {fold(n) for n in recipient_names(rec)})
+            and (not (d0 or d1) or sent) and (not d0 or sent >= d0) and (not d1 or sent < d1)
+            and (not att or att_match(atts, att))}
 
 
 def facets(store, limit=1000):
@@ -213,7 +235,7 @@ def facets(store, limit=1000):
     recipients [[key, name, mails]], most mails first, at most limit each.
     ponytail: one pass over all mails at each 'done' (~0.2 s for 100,000 mails). Upgrade path: a people table."""
     senders, recips = {}, {}
-    for _, name, addr, rec in store.people():
+    for _, name, addr, rec, _, _ in store.people():
         k = sender_key(name, addr)
         if k:
             senders.setdefault(k, [0, name or addr or "", addr or ""])[0] += 1
@@ -359,7 +381,8 @@ def _result(store, r, it, regexes, seq, score, conf):
     chunk = store.chunk(r, seq) if seq is not None else None  # (src, start, end)
     snip, att_idx, att_name, member = _snippet(store, r, it, regexes, chunk)
     return {"eid": it["entry_id"], "folder": it["folder_id"], "subject": it["subject"] or "(konu yok)",
-            "sender": it["sender"] or "", "recipients": it["recipients"] or "", "date": it["sent_at"],
+            "sender": it["sender"] or "", "sender_key": sender_key(it["sender"], it["sender_addr"]),
+            "recipients": it["recipients"] or "", "date": it["sent_at"],
             "snippet": snip, "match_attachment": att_name, "match_att_index": att_idx, "match_att_member": member,
             "hl": marks(snip, regexes), "hl_subject": marks(it["subject"] or "", regexes),
             "attachments": it["attachments"] or "", "score": round(score, 5), "confidence": conf}

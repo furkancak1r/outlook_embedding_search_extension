@@ -222,6 +222,27 @@ class StoreSearchTests(unittest.TestCase):
         kw = hm_search.run(self.store, "sunucu bakımı", NOW, ["F1"], allow=hm_search.allowed(self.store, ["F1"], {"sender": ahmet}))
         self.assertEqual(kw["results"], [])  # keyword stage too
 
+    def test_date_and_attachment_filters(self):
+        """Ara filters Tarih (date_from inclusive, date_to exclusive) and Ek (yes / no / file type), alone and with the
+        sender filter; the search keeps only these mails."""
+        eids = lambda f: {it["entry_id"] for it in self.store.items(hm_search.allowed(self.store, ["F1"], f)).values()}
+        sep = {"date_from": "2026-09-01T00:00:00", "date_to": "2026-10-01T00:00:00"}
+        self.assertEqual(eids(sep), {"E1", "E3"})
+        self.assertEqual(eids({"date_from": "2026-09-20T09:00:00"}), {"E3", "E4"})  # a mail at date_from is inside
+        self.assertEqual(eids({"date_to": "2026-09-20T09:00:00"}), {"E1", "E2"})    # a mail at date_to is outside
+        self.assertEqual(eids({"attach": "yes"}), {"E1", "E4"})
+        self.assertEqual(eids({"attach": "no"}), {"E2", "E3"})
+        self.assertEqual((eids({"attach": "pdf"}), eids({"attach": "excel"}), eids({"attach": "image"})), ({"E1"}, {"E4"}, set()))
+        ahmet = hm_search.sender_key("Ahmet Demir", "ahmet@x.example")
+        self.assertEqual(eids({"sender": ahmet, "attach": "no"}), {"E2"})
+        self.assertEqual(hm_search.allowed(self.store, ["F1"], {"date_from": None, "attach": ""}), None)
+        with self.store.tx():
+            hm_index.ingest(self.store, mail("E8", "Tarihsiz", "Tarih alanı boş.", date=""), 1, REV)
+        self.assertNotIn("E8", eids({"date_to": "2026-09-20T09:00:00"}))  # no date: outside every date range
+        self.assertIn("E8", eids({"attach": "no"}))
+        res = [r["eid"] for r in self.search("kargo faturası", allow=hm_search.allowed(self.store, ["F1"], sep))]
+        self.assertEqual((res[0], set(res) <= {"E1", "E3"}), ("E1", True))  # E3: a weak semantic result inside the dates
+
     def test_similar(self):
         """"Benzerlerini bul": the nearest mails by the stored vectors; the mail itself is not a result; the same topic
         comes first; unknown mail / mail without vectors; filters apply."""
@@ -795,7 +816,8 @@ class ProtocolTests(unittest.TestCase):
     def test_unknown_mode_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             for extra, detail in (({"mode": "delete"}, "unknown mode"), ({"filters": ["x"]}, "bad filters"),
-                                  ({"filters": {"sender": 5}}, "bad filters")):
+                                  ({"filters": {"sender": 5}}, "bad filters"), ({"filters": {"attach": "exe"}}, "bad filters"),
+                                  ({"filters": {"date_from": "geçen ay"}}, "bad filters")):
                 p = self.start(d)
                 self.send(p, op="begin", session="s" * 32, store={"id": "S"}, folders=[{"id": "F1"}], **extra)
                 ev = self.events(p)
@@ -842,6 +864,11 @@ class ProtocolTests(unittest.TestCase):
                                               filters={"sender": "zeynep@x.example", "recipient": None})
             res = {e["stage"]: [r["eid"] for r in e["results"]] for e in ev if e["ev"] == "results"}
             self.assertEqual((code, res), (0, {"keyword": ["E2"], "final": ["E2"]}))
+            # Date filter as the add-in sends it (a date only, and a time with an offset: the local time counts).
+            for f in ({"date_to": "2026-10-01"}, {"date_to": "2026-10-01T00:00:00+03:00", "attach": "no"}):
+                ev, code, _ = self.run_session(d, mails, "kargo faturası", folders=("F1", "F2"), filters=f)
+                res = {e["stage"]: [r["eid"] for r in e["results"]] for e in ev if e["ev"] == "results"}
+                self.assertEqual((code, res), (0, {"keyword": ["E1"], "final": ["E1"]}), f)
 
     def close(self, p):
         for f in (p.stdin, p.stdout, p.stderr):
