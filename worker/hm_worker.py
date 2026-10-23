@@ -262,9 +262,11 @@ def session(args, inbox, out, ctx, enc, begin=None):
     # (whether a PST move keeps LastModificationTime is not verified).
     synced = store.synced(scope) if mode == "update" else None
     stats["unsynced_skipped"] = 0
-    t = time.perf_counter()
+    seen = set()  # rowids of the known items in the manifests (Store.sweep)
+    t, work = time.perf_counter(), 0.0  # work: the worker part of scan_s (the rest is the wait for the add-in)
     while True:
         msg = inbox.get(idle)
+        tw = time.perf_counter()
         op = msg.get("op")
         if op == "manifest":
             fid = msg["folder"]
@@ -278,8 +280,10 @@ def session(args, inbox, out, ctx, enc, begin=None):
                 if synced is not None and fid not in synced:
                     stats["unsynced_skipped"] += sum(1 for r in changed if r[0] not in state)
                     changed = [r for r in changed if r[0] in state]
+                known = [state[r[0]] for r in items if r[0] in state]
+                seen.update(k[0] for k in known)
                 with store.tx():
-                    store.mark_seen([(state[r[0]][0], fid) for r in items if r[0] in state], gen)
+                    store.move_items([(k[0], fid) for k in known if k[2] != fid])  # folder_id follows moves
                     store.mark_stale([state[r[0]][0] for r in changed if r[0] in state])
                     store.set_folder(fid, paths[fid], len(items))
                 need += [(r[3] or "", r[0]) for r in changed]
@@ -290,10 +294,13 @@ def session(args, inbox, out, ctx, enc, begin=None):
             break
         else:
             raise ProtocolError("unexpected op during scan: %s" % op)
+        work += time.perf_counter() - tw
+    tw = time.perf_counter()
     with store.tx():
-        stats["removed"] = store.sweep(complete, gen)
+        stats["removed"] = store.sweep(complete, seen)
     need = [e for _, e in sorted(need, reverse=True)]  # newest first
     timing["scan_s"] = round(time.perf_counter() - t, 3)
+    timing["scan_work_s"] = round(work + time.perf_counter() - tw, 3)
     stats.update(manifest_folders=len(complete), need=len(need))
     out.send("need", eids=need)
 
@@ -336,22 +343,7 @@ def session(args, inbox, out, ctx, enc, begin=None):
         timing["keyword_s"] = round(time.perf_counter() - t, 3)
         out.send("results", stage="keyword", coverage=cov(), **res)
 
-    # 4) Attachments: the worker asks for a few files at a time; the add-in saves them into att_dir; the worker
-    #    reads the text and deletes each file at once. Pull = flow control and a small temp folder.
-    t = time.perf_counter()
-    stop = lambda: inbox.stop.is_set() or (deadline is not None and time.perf_counter() > deadline[0])
-    since = gen - 1 if mode == "update" else None  # update: attachments and embedding of the delta only
-    if since is not None:
-        stats["delta"] = store.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
-            f"SELECT count(*) FROM items i WHERE folder_id IN ({','.join('?' * len(scope))}) AND {hm_store.DELTA}",
-            [*scope, since]).fetchone()[0]
-    if att_dir:
-        stats["att"] = read_attachments(store, inbox, out, scope, att_dir, idle, stop, progress, since)
-        timing["att_s"] = round(time.perf_counter() - t, 3)
-        if inbox.cancelled.is_set():
-            raise Cancelled()
-
-    # 5) Embed new chunks (model loads here, inside this process only, or is already loaded), then the hybrid search.
+    # The model loads here, inside this process only, or is loaded already.
     def get_encoder():
         if "e" not in enc:
             if inbox.cancelled.is_set():
@@ -367,6 +359,36 @@ def session(args, inbox, out, ctx, enc, begin=None):
             raise Cancelled()
         return enc["e"]
 
+    # 3b) Semantic results with the vectors that the index has now, when this search still has attachment or embedding
+    #     work (it can take until the deadline). The final results come after that work, as before, and replace these.
+    #     The deadline grows by the time of this run: the indexing work of the search stays the same.
+    if mode == "search" and query and budget != 0 and cov()["embedded"] and (
+            store.missing_vectors(scope, MODEL_REVISION) or (att_dir and store.pending_atts(scope))):
+        encoder = get_encoder()
+        t = time.perf_counter()
+        res = hm_search.run(store, query, now, scope, encoder=encoder, model_rev=MODEL_REVISION, dim=DIM, top_k=top_k,
+                            allow=allow)
+        out.send("results", stage="semantic", coverage=cov(), **res)
+        timing["semantic_s"] = round(time.perf_counter() - t, 3)
+        if deadline is not None:
+            deadline[0] += time.perf_counter() - t
+
+    # 4) Attachments: the worker asks for a few files at a time; the add-in saves them into att_dir; the worker
+    #    reads the text and deletes each file at once. Pull = flow control and a small temp folder.
+    t = time.perf_counter()
+    stop = lambda: inbox.stop.is_set() or (deadline is not None and time.perf_counter() > deadline[0])
+    since = gen - 1 if mode == "update" else None  # update: attachments and embedding of the delta only
+    if since is not None:
+        stats["delta"] = store.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
+            f"SELECT count(*) FROM items i WHERE folder_id IN ({','.join('?' * len(scope))}) AND {hm_store.DELTA}",
+            [*scope, since]).fetchone()[0]
+    if att_dir:
+        stats["att"] = read_attachments(store, inbox, out, scope, att_dir, idle, stop, progress, since)
+        timing["att_s"] = round(time.perf_counter() - t, 3)
+        if inbox.cancelled.is_set():
+            raise Cancelled()
+
+    # 5) Embed new chunks, then the hybrid search.
     t = time.perf_counter()
     # A time-limited search loads the model only for the query, and only when the scope has a semantic index;
     # new chunks are embedded with it until the deadline. Without a semantic index the search gives keyword results

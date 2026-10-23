@@ -333,6 +333,16 @@ namespace HatirMail
             return code;
         }
 
+        /// <summary>True when every string in the timing log row is under the key "at" or "reason" (no text of a mail or query).</summary>
+        static bool NumbersOnly(object v, string key)
+        {
+            var d = v as Dictionary<string, object>;
+            if (d != null) return d.All(kv => NumbersOnly(kv.Value, kv.Key));
+            var a = v as ArrayList;
+            if (a != null) return a.Cast<object>().All(x => NumbersOnly(x, key));
+            return !(v is string) || key == "at" || key == "reason";
+        }
+
         static bool Alive(int pid)
         {
             try { return pid > 0 && !Process.GetProcessById(pid).HasExited; } catch (ArgumentException) { return false; } catch { return true; }
@@ -362,6 +372,20 @@ namespace HatirMail
             bool recorded = mode != "search" || h.Recent.Count > 0 && h.Recent[0] == form.QueryText.Trim() && form.History.Recent.FirstOrDefault() == h.Recent[0];
             Console.WriteLine("history_recorded=" + recorded);
             bool ok = !attLeft && pids.Count > 0 && indexFound && recorded;
+            if (mode == "search")
+            {
+                // Timing log: the search wrote one JSON line with numbers only (the strings: "at" and "reason").
+                string tl = Path.Combine(settings.Data, "timing.log");
+                string last = File.Exists(tl) ? File.ReadAllLines(tl).LastOrDefault() : null;
+                Dictionary<string, object> row = null;
+                try { if (last != null) row = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>(last); } catch { }
+                bool tok = row != null && row.ContainsKey("manifest") && row.ContainsKey("worker_timing") && (string)row["reason"] == reason &&
+                           (reason != "ok" || row.ContainsKey("final_ms")) && NumbersOnly(row, null);
+                Console.WriteLine("timing_log lines={0} manifest_folders={1} final_ms={2} -> {3}", File.Exists(tl) ? File.ReadAllLines(tl).Length : 0,
+                                  row != null && row.ContainsKey("manifest") ? ((ArrayList)row["manifest"]).Count : -1,
+                                  row != null && row.ContainsKey("final_ms") ? row["final_ms"] : "-", tok ? "ok" : "FAIL");
+                ok &= tok;
+            }
             if (stopAfter >= 0) ok &= reason == "cancelled";
             else
             {
@@ -466,6 +490,7 @@ namespace HatirMail
                 ok &= form.PreviewMarkedChars > 0;
                 ok &= FilterUiCheck(form);
                 ok &= SortUiCheck(form);
+                ok &= StageUiCheck(form);
                 ok &= SearchListCheck(form, shotDir);
                 ok &= HistoryUiCheck(form, settings, shotDir);
                 ok &= IndexDeleteCheck(form, settings); // it clears the results
@@ -833,6 +858,9 @@ namespace HatirMail
             var lv = SearchForm.AllControls(form.Root).OfType<ListView>().First(x => x.AccessibleName == "Sonuçlar");
             bool rows3 = lv.Items.Count >= 3 && lv.GetItemRect(2).Bottom <= lv.ClientSize.Height;
             ok &= rows3;
+            if (!rows3 && lv.Items.Count >= 3)
+                Console.WriteLine("filter_grid {0} list_client_h={1} top_item={2} row0={3} row2={4} list_h={5}", name, lv.ClientSize.Height,
+                                  lv.TopItem != null ? lv.TopItem.Index : -1, lv.GetItemRect(0), lv.GetItemRect(2), lv.Height);
             Console.WriteLine("filter_grid {0} widths={1} lefts={2} tops={3} list_shows_3_rows={4} -> {5}", name, string.Join("/", b.Concat<Control>(d).Select(x => x.Width)),
                               string.Join("/", b.Concat<Control>(d).Select(x => at(x).Left)), string.Join("/", b.Concat<Control>(d).Select(x => at(x).Top)), rows3, ok ? "ok" : "FAIL");
             return ok;
@@ -940,6 +968,39 @@ namespace HatirMail
             bool hasChoice = form.SelectedHasSenderChoice, enabled = form.FilterBySenderEnabled;
             form.ClickFilterBySender();
             check("filter_by_sender_off_before_a_run", noChoice && hasChoice && !enabled && form.FilterBoxes[0].SelectedIndex == 0);
+            return ok;
+        }
+
+        // The early semantic list (stage "semantic") and the final list of one search: the status text tells that the list
+        // comes again; the mail that the user selected stays selected in the next list; without a choice by the user the
+        // first row of the new list is selected.
+        static bool StageUiCheck(SearchForm form)
+        {
+            bool ok = true;
+            Action<string, bool> check = (name, pass) => { Console.WriteLine("stage_ui_" + name + "=" + (pass ? "ok" : "FAIL")); ok &= pass; };
+            Func<string, string[], Dictionary<string, object>> res = (stage, order) =>
+            {
+                var r = Results();
+                var byEid = ((ArrayList)r["results"]).Cast<Dictionary<string, object>>().ToDictionary(x => (string)x["eid"]);
+                r["results"] = new ArrayList(order.Select(e => byEid[e]).ToList());
+                r["stage"] = stage;
+                return r;
+            };
+            if (form.HeaderText(3) != "Güven ▼") form.ClickHeader(3); // the worker order for this check
+            // The keyword list of a new search: the selection of the check before (E1) is not in it.
+            form.Feed("search", res("keyword", new[] { "E2", "E3" }));
+            bool kw = form.SelectedEid == "E2" && form.StatusText.Contains("Anlamsal arama sürüyor");
+            form.Feed("search", res("semantic", new[] { "E1", "E2", "E3" }));
+            check("keyword_first_row", kw);
+            check("semantic_status", form.StatusText.Contains("Bitince liste bir kez daha yenilenir") && form.SelectedEid == "E1");
+            form.Feed("search", res("final", new[] { "E2", "E1", "E3" }));
+            check("first_row_follows", form.SelectedEid == "E2" && form.StatusText.StartsWith("3 sonuç"));
+            form.SelectResult(2); // the user selects E3
+            form.Feed("search", res("final", new[] { "E2", "E3", "E1" }));
+            check("user_choice_kept", form.SelectedEid == "E3");
+            form.Feed("search", res("final", new[] { "E1", "E2" })); // E3 is not in the new list
+            check("gone_choice_first_row", form.SelectedEid == "E1");
+            form.Feed("search", Results());
             return ok;
         }
 

@@ -85,6 +85,7 @@ namespace HatirMail
         bool purgeAsked;    // the next status check applies a new folder exclusion: it reports the deleted mails
         string notice;      // that report: it stays in front of the model texts until the next session starts
         string filterNote = ""; // the filters of the running or last search (status text)
+        string autoEid;         // the result that ShowResults selected itself (the first row)
         int previewWant; bool fitQueued; // preview height: the default or the splitter; FitPreview can make it smaller
         readonly Dictionary<string, FolderCov> cov = new Dictionary<string, FolderCov>();
         WorkerSession session;
@@ -1615,6 +1616,10 @@ namespace HatirMail
         {
             string stage = ev["stage"] as string;
             var results = ((ArrayList)ev["results"]).Cast<Dictionary<string, object>>().ToList();
+            // The next list of the same search keeps the mail that the user selected (not the first row that this method
+            // selected: then the first row of the new list).
+            var was = SelectedResult();
+            string keep = was != null && (was["eid"] as string) != autoEid ? was["eid"] as string : null;
             list.BeginUpdate();
             list.Items.Clear();
             int rank = 0;
@@ -1652,6 +1657,9 @@ namespace HatirMail
             }
             else if (stage == "keyword")
                 SetStatus((results.Count > 0 ? "Kelime eşleşmeleri gösteriliyor." : "Tam kelime eşleşmesi yok.") + " Anlamsal arama sürüyor…" + dates);
+            else if (stage == "semantic") // the indexed mails; the new ones are indexed now, then the final list comes
+                SetStatus((results.Count > 0 ? results.Count + " sonuç." : "Şimdilik sonuç yok.") +
+                          " Yeni postalar ve ekler indeksleniyor. Bitince liste bir kez daha yenilenir." + dates);
             else if (!semantic)
                 SetStatus((results.Count > 0 ? results.Count + " kelime eşleşmesi." : "Kelime eşleşmesi yok.") +
                           " Anlam indeksi henüz yok: İndeks sekmesinden indekslemeyi başlatın." + dates);
@@ -1659,7 +1667,10 @@ namespace HatirMail
                 SetStatus("Güçlü bir eşleşme bulunamadı. Gri satırlar yalnız zayıf benzerliktir; başka ayrıntı deneyin." + dates);
             else
                 SetStatus(results.Count + " sonuç. Açmak için çift tıklayın ya da Outlook'ta Aç'a basın." + dates);
-            if (list.Items.Count > 0) list.Items[0].Selected = true; else ShowPreview();
+            var sel = list.Items.Cast<ListViewItem>().FirstOrDefault(i => keep != null && (string)((Dictionary<string, object>)i.Tag)["eid"] == keep);
+            if (sel != null) { sel.Selected = true; sel.EnsureVisible(); } // a kept row can be lower than the first page
+            else if (list.Items.Count > 0) { list.Items[0].Selected = true; autoEid = (string)((Dictionary<string, object>)list.Items[0].Tag)["eid"]; } // as before 10-23
+            else ShowPreview();
             UpdateButtons();
         }
 
@@ -1918,6 +1929,7 @@ namespace HatirMail
         public int ResultCount { get { return list.Items.Count; } }
         public string ResultEid(int i) { return ((Dictionary<string, object>)list.Items[i].Tag)["eid"] as string; }
         public void SelectResult(int i) { list.Items[i].Selected = true; }
+        public string SelectedEid { get { var r = SelectedResult(); return r != null ? r["eid"] as string : null; } } // test hook
         public void ClickOpen() { OpenSelected(); }
         public void ClickOpenAttachment() { OpenAttachment(); }
         public string AttachLine { get { return attBar.Visible ? attLine.Text : null; } } // null: no attachment bar
@@ -2191,6 +2203,7 @@ namespace HatirMail
             Interlocked.Exchange(ref lastEventMs, clock.ElapsedMilliseconds);
             form.OnEvent(Mode, ev);
             string name = ev["ev"] as string;
+            Mark(name, ev);
             if (name == "hello" && !Light) SendManifests();
             else if (name == "need") SendItems(((ArrayList)ev["eids"]).Cast<string>().ToList());
             else if (name == "need_att") SaveAttachments((ArrayList)ev["atts"]);
@@ -2201,6 +2214,51 @@ namespace HatirMail
             }
         }
 
+        // Timing log (search only): one JSON line per search in data\timing.log. Numbers only: no query, mail text, entry
+        // id, folder name or path (the folder rows are in scope order). Outlook side: the manifest of each folder [rows, ms,
+        // ms to the first row (GetTable)], the mail reading, the attachment saving. Worker side: done.timing and done.stats.
+        // ms values count from the session start. ponytail: two files of at most 1 MB (timing.log, timing.log.1).
+        readonly Dictionary<string, object> log = new Dictionary<string, object>();
+        readonly List<object> logFolders = new List<object>();
+        long attMs; int attSaved;
+        static readonly string[] Marks = { "hello", "need", "keyword", "semantic", "final", "done" };
+
+        void Mark(string name, Dictionary<string, object> ev)
+        {
+            string key = name == "results" ? ev["stage"] as string : name;
+            if (Array.IndexOf(Marks, key) >= 0 && !log.ContainsKey(key + "_ms")) log[key + "_ms"] = clock.ElapsedMilliseconds;
+            if (name == "need") log["need"] = ((ArrayList)ev["eids"]).Count;
+            if (name == "results" && key == "final") log["results"] = ((ArrayList)ev["results"]).Count;
+            if (name == "done") { log["worker_timing"] = Nums(ev.ContainsKey("timing") ? ev["timing"] : null); log["worker_stats"] = Nums(ev.ContainsKey("stats") ? ev["stats"] : null); }
+        }
+
+        /// <summary>Only the numbers and true/false values of a worker object (the keys are fixed names of the worker).</summary>
+        static object Nums(object v)
+        {
+            var d = v as Dictionary<string, object>;
+            if (d != null) return d.Where(kv => Nums(kv.Value) != null).ToDictionary(kv => kv.Key, kv => Nums(kv.Value));
+            return v is bool || v is int || v is long || v is decimal || v is double ? v : null;
+        }
+
+        void WriteLog(string reason)
+        {
+            if (Mode != "search") return;
+            try
+            {
+                log["at"] = DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:ss");
+                log["reason"] = reason; // a fixed word of this class ("ok", "cancelled", "hata", "zaman aşımı" …)
+                log["total_ms"] = clock.ElapsedMilliseconds;
+                log["manifest"] = logFolders;
+                log["att_save_ms"] = attMs; log["att_saved"] = attSaved;
+                log["threads"] = settings.Threads; log["budget_s"] = settings.SearchIndexBudgetS;
+                string path = Path.Combine(settings.Data, "timing.log");
+                var fi = new FileInfo(path);
+                if (fi.Exists && fi.Length > 1 << 20) { File.Delete(path + ".1"); File.Move(path, path + ".1"); }
+                File.AppendAllText(path, new JavaScriptSerializer().Serialize(log) + "\n", new UTF8Encoding(false));
+            }
+            catch { } // extra information only: a locked file or a full disk never stops a search
+        }
+
         // Folder item lists. Pumps UI messages between pages so that "Durdur" stays clickable.
         void SendManifests()
         {
@@ -2208,8 +2266,12 @@ namespace HatirMail
             foreach (var f in scope)
             {
                 var page = new List<object>();
+                var fw = Stopwatch.StartNew();
+                long first = -1; int n = 0;
                 foreach (var row in source.Manifest(f, () => cancelled))
                 {
+                    if (first < 0) first = fw.ElapsedMilliseconds;
+                    n++;
                     page.Add(row);
                     map[(string)row[0]] = f.Id;
                     if (page.Count == 500)
@@ -2222,8 +2284,10 @@ namespace HatirMail
                 }
                 if (cancelled || ended) return;
                 Send(new Dictionary<string, object> { {"op", "manifest"}, {"folder", f.Id}, {"items", page}, {"final", true} });
+                logFolders.Add(new long[] { n, fw.ElapsedMilliseconds, first < 0 ? fw.ElapsedMilliseconds : first });
             }
             folderOf = map;
+            log["manifest_end_ms"] = clock.ElapsedMilliseconds;
             Send(new Dictionary<string, object> { {"op", "scan_done"} });
         }
 
@@ -2250,6 +2314,7 @@ namespace HatirMail
                 if (sw.ElapsedMilliseconds - pumped >= 100) { pumped = sw.ElapsedMilliseconds; Application.DoEvents(); }
             }
             if (batch.Count > 0) Send(new Dictionary<string, object> { {"op", "items"}, {"items", batch} });
+            log["read_ms"] = sw.ElapsedMilliseconds; log["read_failed"] = failed.Count; log["read_stopped"] = stopped;
             Send(new Dictionary<string, object> { {"op", "items_done"}, {"failed", failed}, {"stopped", stopped} });
         }
 
@@ -2258,6 +2323,16 @@ namespace HatirMail
         void SaveAttachments(ArrayList atts)
         {
             var files = new List<object>();
+            var aw = Stopwatch.StartNew();
+            try { SaveEach(atts, files); }
+            finally { attMs += aw.ElapsedMilliseconds; }
+            if (cancelled || ended) return;
+            attSaved += files.Count(f => ((object[])f)[2] != null);
+            Send(new Dictionary<string, object> { {"op", "att_files"}, {"files", files} });
+        }
+
+        void SaveEach(ArrayList atts, List<object> files)
+        {
             foreach (ArrayList a in atts)
             {
                 if (cancelled || ended) return;
@@ -2272,8 +2347,6 @@ namespace HatirMail
                 Application.DoEvents();
             }
             Application.DoEvents();
-            if (cancelled || ended) return;
-            Send(new Dictionary<string, object> { {"op", "att_files"}, {"files", files} });
         }
 
         public void Cancel()
@@ -2319,6 +2392,7 @@ namespace HatirMail
                 if (reason != "ok" || !KeepProcess || Proc.Exited) { KeepProcess = false; Proc.Close(); }
             }
             try { if (attDir != null && Directory.Exists(attDir)) Directory.Delete(attDir, true); } catch { } // no copy stays
+            WriteLog(reason);
             form.OnSessionEnd(this, reason);
         }
     }

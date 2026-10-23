@@ -5,7 +5,8 @@ The attachment messages (8a–8c) are optional: an add-in without `attachments` 
 `keep_alive_s` and `preload` are optional: without them the process runs one session and exits.
 `exclude` is optional: without it no folder is deleted from the index.
 `filters` is optional: without it the search is not narrowed. Modes `update` and `similar` are new; an add-in that does not
-send them gets the same behavior as before. `done.facets` and `results.similar_to` are additive fields.
+send them gets the same behavior as before. `done.facets` and `results.similar_to` are additive fields. The `results`
+stage `semantic` (step 8s) and `done.timing.scan_work_s`, `done.timing.semantic_s` are additive too.
 
 The add-in starts `python.exe -I -B -X utf8 hm_worker.py --data <dir> --model <dir> --threads N` with the
 environment variable `HM_SESSION=<48 hex chars>`. Both sides send one UTF-8 JSON object per line on the
@@ -89,10 +90,11 @@ no limit. When the scope has no semantic index yet, a time-limited search loads 
 | 2 | ← | `{"ev":"hello","pid","proto","index_version","model_rev","mode","coverage","model_ready"}` | `status` mode: `done` follows at once. `model_ready`: the model of this process is loaded already (keep-alive) |
 | 3 | → | `{"op":"manifest","folder","items":[[eid, last_mod, class, date], …],"final":bool}` | pages of ≤ 500 rows; `final` closes a folder. Changed mails are marked "to read" at once |
 | 4 | → | `{"op":"scan_done"}` | |
-| 5 | ← | `{"ev":"need","eids":[…]}` | new or changed items, newest first; deleted/moved-out items are removed now |
+| 5 | ← | `{"ev":"need","eids":[…]}` | new or changed items, newest first; deleted/moved-out items are removed now (items of the listed folders that no manifest of this scan holds). A known item in the manifest of another folder moves there and is not read again. `done.timing.scan_s` = from the first manifest wait to `need` (the add-in time included); `scan_work_s` = the worker part of it |
 | 6 | → | `{"op":"items","items":[{eid,folder,cls,mod,subject,sender,sender_addr,to,cc,date,attachments[],att_meta[[index,name,size,type]],body}]}` | pages of 25. `index` is 1-based; `type` is the Outlook `OlAttachmentType` (1 = file, 5 = attached item) |
 | 7 | → | `{"op":"items_done","failed":[eid…],"stopped":bool}` | always sent, also after an empty `need`. `stopped`: the read time limit ended the reading; the rest stays "to read" and the next scan asks for it again |
 | 8 | ← | `{"ev":"results","stage":"keyword",…}` | search only: keyword results, no model needed |
+| 8s | ← | `{"ev":"results","stage":"semantic",…}` | search only, optional: hybrid results with the vectors that the index has now. Sent only when the search still has work (a chunk without a vector, or a pending attachment with `attachments`), the query is not empty, `index_budget_s` is not `0` and the scope has vectors. The `final` results (step 10) replace them. The deadline grows by the time of this step |
 | 8a | ← | `{"ev":"need_att","atts":[[eid,index,name],…]}` | only with `attachments`; at most 4 per request, newest mails first |
 | 8b | → | `{"op":"att_files","files":[[eid,index,path or null],…]}` | `path` must be a file directly in `att_dir` (else `done/error`). The worker reads and deletes each file. `null`: the add-in could not save it |
 | 8c | ← | `{"ev":"progress","phase":"att",…}` | 8a–8c repeat until all pending attachments are read, or cancel/finish/time limit |

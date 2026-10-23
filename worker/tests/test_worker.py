@@ -177,8 +177,7 @@ class StoreSearchTests(unittest.TestCase):
     def test_sweep_removes_deleted(self):
         with self.store.tx():
             state = self.store.item_state(["E1", "E2", "E3"])
-            self.store.mark_seen([(state[e][0], "F1") for e in state], 9)
-            removed = self.store.sweep(["F1"], 9)
+            removed = self.store.sweep(["F1"], {s[0] for s in state.values()})
         self.assertEqual(removed, 1)  # E4 is not in the new manifest
         self.assertTrue(all(r["eid"] != "E4" for r in self.search("toplantı notları")))
 
@@ -812,6 +811,63 @@ class ProtocolTests(unittest.TestCase):
                              (set(), 0, 0))
             self.assertFalse(ev[-1]["model_loaded"] or "model" in [e.get("phase") for e in ev])  # nothing to do: no model
             self.assertTrue(ev[-1]["coverage"]["complete"])
+
+    def test_semantic_stage_before_embedding(self):
+        """New mails without vectors: semantic results with the indexed mails come before the embedding, then the final
+        results. The final list is the same as a search on the index after the session (the quality does not change).
+        Nothing to embed: no semantic stage (one list less)."""
+        import hm_embed
+        with tempfile.TemporaryDirectory() as d:
+            old = [mail("E1", "Kargo faturası", "Eylül kargo faturası.", "2026-09-12T09:00:00"),
+                   mail("E2", "Sunucu bakımı", "Cumartesi bakım.", "2026-09-20T09:00:00")]
+            self.run_session(d, old, "", mode="index")
+            new = old + [mail("N1", "Kargo faturası ekim", "Ekim kargo faturası ektedir.", "2026-10-10T09:00:00")]
+            ev, code, need = self.run_session(d, new, "kargo faturası", index_budget_s=20)
+            names = [e["stage"] if e["ev"] == "results" else e.get("phase") or e["ev"] for e in ev]
+            self.assertEqual((code, need), (0, {"N1"}))
+            self.assertLess(names.index("keyword"), names.index("semantic"))
+            self.assertLess(names.index("semantic"), names.index("embed"))
+            self.assertLess(names.index("embed"), names.index("final"))
+            res = {e["stage"]: e for e in ev if e["ev"] == "results"}
+            self.assertTrue(res["semantic"]["semantic"])
+            cos = lambda stage: {r["eid"]: r["cos"] for r in res[stage]["results"]}
+            self.assertIsNone(cos("semantic")["N1"])  # read, found by its words; no vector yet
+            self.assertIsNotNone(cos("final")["N1"])
+            st = Store(str(next(Path(d, "index").glob("*.sqlite"))), hm_embed.MODEL_REVISION)
+            ref = hm_search.run(st, "kargo faturası", NOW, ["F1"], encoder=hm_embed.FakeEncoder(),
+                                model_rev=hm_embed.MODEL_REVISION, dim=hm_embed.DIM)
+            st.close()
+            self.assertEqual(res["final"]["results"], ref["results"])
+            ev, code, need = self.run_session(d, new, "kargo faturası", index_budget_s=20)
+            self.assertEqual([e["stage"] for e in ev if e["ev"] == "results"], ["keyword", "final"])
+            ev, code, need = self.run_session(d, new + [mail("N2", "Kargo", "Kasım kargo.", "2026-11-01T09:00:00")],
+                                              "kargo faturası", index_budget_s=0)  # no indexing time: no semantic stage
+            self.assertEqual([e["stage"] for e in ev if e["ev"] == "results"], ["keyword", "final"])
+
+    def test_scan_moved_and_deleted(self):
+        """The scan writes only the moved mails (folder_id) and deletes the mails that no manifest holds. A moved mail
+        is not read again and keeps its vectors."""
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            mails = [mail("E1", "Kargo faturası", "Eylül kargo faturası.", "2026-09-12T09:00:00"),
+                     mail("E2", "Sunucu bakımı", "Cumartesi bakım.", "2026-09-20T09:00:00"),
+                     mail("E3", "Toplantı", "Bütçe toplantısı.", "2026-09-22T09:00:00", folder="F2")]
+            self.run_session(d, mails, "", folders=("F1", "F2"), mode="index")
+            now = [dict(mails[0], folder="F2"), mails[2]]  # E1 moved to F2, E2 deleted
+            ev, code, need = self.run_session(d, now, "kargo faturası", folders=("F1", "F2"))
+            done = ev[-1]
+            self.assertEqual((code, need, done["stats"]["removed"], done["stats"]["embed"]["embedded_chunks"]),
+                             (0, set(), 1, 0))
+            final = [e for e in ev if e["ev"] == "results" and e["stage"] == "final"][0]
+            self.assertEqual((final["results"][0]["eid"], final["results"][0]["folder"]), ("E1", "F2"))
+            db = sqlite3.connect(next(Path(d, "index").glob("*.sqlite")))
+            self.assertEqual(dict(db.execute("SELECT entry_id, folder_id FROM items")), {"E1": "F2", "E3": "F2"})
+            db.close()
+            # Only F1 listed: E1 (now in F2) stays; a folder that is not in the scan keeps its mails.
+            ev, code, need = self.run_session(d, now, "kargo", folders=("F1",))
+            self.assertEqual((code, ev[-1]["stats"]["removed"], ev[-1]["coverage"]["indexed"]), (0, 0, 0))
+            ev, _ = self.status(d, ("F2",))
+            self.assertEqual(ev[-1]["coverage"]["indexed"], 2)
 
     def test_unknown_mode_rejected(self):
         with tempfile.TemporaryDirectory() as d:

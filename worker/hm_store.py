@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS items(
   last_mod TEXT, content_hash TEXT, subject TEXT, sender TEXT, sender_addr TEXT, recipients TEXT,
   sent_at TEXT, attachments TEXT, main_text TEXT, n_chunks INTEGER, embedded INTEGER DEFAULT 0,
   model_rev TEXT, index_version INTEGER, seen_gen INTEGER DEFAULT 0, added_gen INTEGER NOT NULL DEFAULT 0);
+-- items.seen_gen: written, not read since 2026-10-23 (Store.sweep keeps the seen rows in memory). Kept for old files.
 CREATE INDEX IF NOT EXISTS items_folder ON items(folder_id, seen_gen);
 CREATE TABLE IF NOT EXISTS chunks(
   id INTEGER PRIMARY KEY, item_rowid INTEGER NOT NULL, seq INTEGER, start INTEGER, end INTEGER, text_hash TEXT,
@@ -109,29 +110,31 @@ class Store:
 
     # -- sync ---------------------------------------------------------------------------------
     def item_state(self, entry_ids):
-        """{entry_id: (rowid, last_mod)} for known ids."""
+        """{entry_id: (rowid, last_mod, folder_id)} for known ids."""
         out = {}
         for i in range(0, len(entry_ids), 500):
             part = entry_ids[i:i + 500]
-            out.update((e, (r, m)) for e, r, m in self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
-                f"SELECT entry_id, rowid, last_mod FROM items WHERE entry_id IN ({_in(len(part))})", part))
+            out.update((e, (r, m, f)) for e, r, m, f in self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
+                f"SELECT entry_id, rowid, last_mod, folder_id FROM items WHERE entry_id IN ({_in(len(part))})", part))
         return out
 
-    def mark_seen(self, rows, gen):
-        """rows: [(rowid, folder_id)] present in the current manifest (folder_id follows moves)."""
-        self.db.executemany("UPDATE items SET seen_gen=?, folder_id=? WHERE rowid=?", [(gen, f, r) for r, f in rows])
+    def move_items(self, rows):
+        """rows: [(rowid, folder_id)]: known items that the manifest of another folder holds now (moved in Outlook)."""
+        self.db.executemany("UPDATE items SET folder_id=? WHERE rowid=?", [(f, r) for r, f in rows])
 
     def mark_stale(self, rowids):
         """Changed in Outlook, not read again yet: the item stays searchable with its old text, counts as not read,
         and the next scan asks for it again (a time-limited search can stop before it)."""
         self.db.executemany("UPDATE items SET last_mod=NULL WHERE rowid=?", [(r,) for r in rowids])
 
-    def sweep(self, folder_ids, gen):
-        """Delete items of completely listed folders that the manifest did not contain (deleted / moved out)."""
+    def sweep(self, folder_ids, seen):
+        """Delete the items of completely listed folders that no manifest of this scan held (deleted / moved out).
+        seen: rowids of the known items in the manifests of this scan. The set stays in memory, so a scan writes only
+        the moved items (10-23 bench, 28,632 mails: a per-row seen_gen UPDATE took 182 ms of the 216 ms scan)."""
         if not folder_ids:
             return 0
         rows = [r for (r,) in self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
-            f"SELECT rowid FROM items WHERE folder_id IN ({_in(len(folder_ids))}) AND seen_gen<>?", [*folder_ids, gen])]
+            f"SELECT rowid FROM items WHERE folder_id IN ({_in(len(folder_ids))})", list(folder_ids)) if r not in seen]
         for r in rows:
             self.delete_item(r)
         return len(rows)
@@ -255,6 +258,13 @@ class Store:
         return self.db.execute(
             f"SELECT rowid, subject, sender, attachments, main_text FROM items i WHERE embedded=0"
             f" AND folder_id IN ({_in(len(folder_ids))}){delta} ORDER BY sent_at DESC", [*folder_ids, *args]).fetchall()
+
+    def missing_vectors(self, folder_ids, model_rev):
+        """True when a not-embedded mail of the scope has a chunk without a vector: embed_pending has model work."""
+        return self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
+            "SELECT EXISTS(SELECT 1 FROM items i JOIN chunks c ON c.item_rowid=i.rowid LEFT JOIN vectors v"
+            " ON v.text_hash=c.text_hash AND v.model_rev=? WHERE v.text_hash IS NULL AND i.embedded=0"
+            f" AND i.folder_id IN ({_in(len(folder_ids))}))", [model_rev, *folder_ids]).fetchone()[0] == 1
 
     def chunk_rows(self, rowid):
         """[(src, start, end, text_hash)] in chunk order."""

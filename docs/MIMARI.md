@@ -101,6 +101,14 @@ Outlook.exe (Klasik)
   Ağırlıklar sentetik sorguların tek numaralı yarısında seçildi, çift numaralı yarısında sınandı.
 - **Güven etiketi:** Yüksek / Orta / Zayıf. Zayıf sonuçlar gri gösterilir; hiçbir sonuç "bulundu" diye sunulmaz.
   Anlamsal aşama bitmeden yalnız tüm sorgu sözcüklerini içeren postalar ("Kelime") gösterilir.
+- **Erken anlamsal liste (23 Ekim):** aramanın indeksleme işi varsa (vektörü olmayan yeni parçalar ya da okunmamış
+  ekler), worker önce indeksteki vektörlerle anlamsal listeyi gönderir (`semantic` aşaması), sonra işi yapar ve son
+  listeyi (`final`) eskisi gibi baştan hesaplar. Son liste değişmez; erken liste yalnız eklenir. İndeksleme süresi bu
+  adımın süresi kadar uzar. Ölçüm (Mac, 28.632 posta, 50 yeni posta): ilk anlamsal liste 2,57 s yerine 0,24 s'de geldi;
+  5 sorgunun 5'inde son liste (posta, puan, güven) eski worker ile aynı.
+- **Tarama (23 Ekim):** worker artık her taramada her satıra `seen_gen` yazmaz. Görülen satırlar bellekte tutulur;
+  yalnız taşınan postaların klasörü yazılır. Silinecekler: listelenen klasörlerde olup bu taramanın hiçbir manifestinde
+  olmayan satırlar (silme kuralı aynı). Ölçüm: tarama 0,22 s'den 0,09 s'ye indi.
 
 ### 4a. Ek içeriği (indeks sürümü 2)
 
@@ -224,6 +232,11 @@ Outlook.exe (Klasik)
   dosya oluşmadığını denetler.
 - Mail ya da sorgu metni hiçbir log dosyasına yazılmaz. Worker stderr'i yalnız boşaltılır, saklanmaz.
   Protokol testi, sorgu metninin stderr'de görünmediğini denetler.
+- Süre günlüğü `data\timing.log`: her arama için tek bir JSON satırı. Satırda yalnız sayılar ve sabit sözcükler vardır:
+  klasör başına manifest satır sayısı ve süresi (klasörler kapsam sırasıyla numaralı, ad yok), okuma ve ek kaydetme
+  süresi, olay zamanları (`hello`, `need`, `keyword`, `semantic`, `final`, `done`), worker `done.timing` ve
+  `done.stats` içindeki sayılar. Sorgu, posta metni, posta kimliği, klasör adı ve yol yazılmaz. İki dosya, her biri en
+  çok 1 MB (`timing.log`, `timing.log.1`). Kaldırma `-KeepData` olmadan `data` klasörüyle birlikte siler.
 - Eklenti postaları yalnız okur: `Send`, `Delete`, `Move`, `UnRead` gibi üyeleri hiç çağırmaz.
   `Body` okumak öğeyi okundu yapmaz; "Outlook'ta Aç" yalnız `Display()` çağırır. `Attachment.SaveAsFile` eki
   değiştirmez; kopyası yalnız worker okuyana kadar yerel veri klasöründe durur. "Eki aç" kopyası pencere kapanana kadar

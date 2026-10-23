@@ -159,7 +159,8 @@ gelen, değişen, taşınan ve silinen postaları işler. Güncel bir indekste b
    `mart başında gelen raf teklifi`, `mail from Sarah about the delayed shipment`. Ekin içinde geçen bir şeyi de
    yazabilirsiniz: `galvanizli raf dikmesi sayımı` (Excel), `soğuk zincir taşıma faturası` (PDF), `E-4012 hata kodu`
    (ekran görüntüsü).
-2. **Ara**'ya basın. Önce kelime eşleşmeleri, sonra anlamsal sonuçlar görünür.
+2. **Ara**'ya basın. Önce kelime eşleşmeleri, sonra anlamsal sonuçlar görünür. Yeni postalar varsa önce indeksteki
+   postalarla sonuçlar gelir. Yeni postalar indekslenince liste bir kez daha yenilenir. Seçtiğiniz posta seçili kalır.
    Pencere açılınca yapay zekâ modeli arka planda hazırlanır (durum çubuğunda "Yapay zekâ hazır" yazar). Pencere açık
    kaldıkça sonraki aramalar modeli beklemez.
 3. Bir sonuç seçin. Alttaki önizlemede konu, kişi, tarih ve eşleşen bölüm görünür; aranan sözcükler sarı zeminle
@@ -370,6 +371,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail
 ## Gizlilik
 
 - Bulut yapay zekâ, telemetri ve mail/sorgu kaydı (log) yoktur.
+- Her aramanın süreleri `%LOCALAPPDATA%\HatirMail\data\timing.log` dosyasına yazılır. Dosyada yalnız sayılar vardır
+  (milisaniye, posta sayısı). Arama metni, posta metni, klasör adı ve posta kimliği yazılmaz. Dosya hiçbir yere
+  gönderilmez. En çok iki dosya (`timing.log`, `timing.log.1`), her biri en çok 1 MB tutulur. Dosyayı silebilirsiniz.
 - Eklenti postaları yalnız okur. Gönderme, silme, taşıma ya da okundu işaretleme yapmaz. İndeksleme okundu durumunu
   değiştirmez. **Outlook'ta Aç** ile sizin açtığınız posta, Outlook'un kendi ayarına göre okundu olabilir (çift tıklayıp
   açmakla aynıdır).
