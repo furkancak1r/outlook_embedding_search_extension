@@ -145,11 +145,16 @@ def db_path(data_dir, store_id):
 MODES = ("search", "index", "update", "status", "similar")
 
 
+_load_lock = threading.Lock()
+
+
 def load_encoder(args, enc):
-    """The model loads once per process; the next sessions of a kept-alive process reuse it."""
-    if "e" not in enc:
-        import hm_embed
-        enc["e"] = (hm_embed.FakeEncoder if args.fake_encoder else hm_embed.Encoder)(args.model, args.threads)
+    """The model loads once per process; the next sessions of a kept-alive process reuse it. The lock: a session that
+    needs the model during the preload (preload thread) waits for that load and does not load a second copy."""
+    with _load_lock:
+        if "e" not in enc:
+            import hm_embed
+            enc["e"] = (hm_embed.FakeEncoder if args.fake_encoder else hm_embed.Encoder)(args.model, args.threads)
     return enc["e"]
 
 
@@ -515,19 +520,27 @@ def main():
 
 
 def preload(args, out, enc, inbox):
-    """Load the model between sessions (the search window opened; the scope has vectors), so that the next search
-    does not wait for it. A begin that arrives meanwhile waits in the inbox."""
+    """Load the model on a thread after the status check (the search window opened; the scope has vectors), so that the
+    next search does not wait for it. A begin that arrives meanwhile starts at once: its scan, read and keyword results
+    run during the load, and its first model use waits for this load (load_encoder). 10-23 probe (Mac): the main work
+    took 0.066-0.086 s during a load on a thread, 0.064 s alone; the load took the same time."""
     if inbox.cancelled.is_set():
         return
-    t = time.perf_counter()
-    if "e" not in enc:
+    if "e" in enc:
+        out.send("model", state="ready", load_s=0.0, peak_rss_mb=peak_rss_mb())
+        return
+
+    def run():
+        t = time.perf_counter()
         out.send("model", state="loading")
         try:
             load_encoder(args, enc)
         except Exception as e:  # the next search tries again and reports its own error
             out.send("model", state="error", error=type(e).__name__)
             return
-    out.send("model", state="ready", load_s=round(time.perf_counter() - t, 3), peak_rss_mb=peak_rss_mb())
+        out.send("model", state="ready", load_s=round(time.perf_counter() - t, 3), peak_rss_mb=peak_rss_mb())
+
+    threading.Thread(target=run, daemon=True, name="preload").start()
 
 
 if __name__ == "__main__":

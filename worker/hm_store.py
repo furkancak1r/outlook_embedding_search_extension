@@ -39,7 +39,30 @@ CREATE INDEX IF NOT EXISTS atts_state ON atts(state);
 CREATE TABLE IF NOT EXISTS att_texts(file_hash TEXT PRIMARY KEY, state TEXT, text TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_att USING fts5(
   body, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2', prefix='2 3 4');
+-- data_gen: +1 for every change of an items row (insert, delete, other folder), a chunk or a vector, also by another
+-- process. The caches of a kept worker (Store.cached: vector matrix, filter values) are valid only for one value.
+INSERT OR IGNORE INTO meta(k, v) VALUES('data_gen', '0');
+CREATE TRIGGER IF NOT EXISTS gen_items_ins AFTER INSERT ON items BEGIN
+  UPDATE meta SET v = CAST(v AS INTEGER) + 1 WHERE k = 'data_gen'; END;
+CREATE TRIGGER IF NOT EXISTS gen_items_del AFTER DELETE ON items BEGIN
+  UPDATE meta SET v = CAST(v AS INTEGER) + 1 WHERE k = 'data_gen'; END;
+CREATE TRIGGER IF NOT EXISTS gen_items_move AFTER UPDATE OF folder_id ON items WHEN NEW.folder_id IS NOT OLD.folder_id BEGIN
+  UPDATE meta SET v = CAST(v AS INTEGER) + 1 WHERE k = 'data_gen'; END;
+CREATE TRIGGER IF NOT EXISTS gen_chunks_ins AFTER INSERT ON chunks BEGIN
+  UPDATE meta SET v = CAST(v AS INTEGER) + 1 WHERE k = 'data_gen'; END;
+CREATE TRIGGER IF NOT EXISTS gen_chunks_del AFTER DELETE ON chunks BEGIN
+  UPDATE meta SET v = CAST(v AS INTEGER) + 1 WHERE k = 'data_gen'; END;
+CREATE TRIGGER IF NOT EXISTS gen_chunks_upd AFTER UPDATE ON chunks BEGIN
+  UPDATE meta SET v = CAST(v AS INTEGER) + 1 WHERE k = 'data_gen'; END;
+CREATE TRIGGER IF NOT EXISTS gen_vectors_ins AFTER INSERT ON vectors BEGIN
+  UPDATE meta SET v = CAST(v AS INTEGER) + 1 WHERE k = 'data_gen'; END;
+CREATE TRIGGER IF NOT EXISTS gen_vectors_del AFTER DELETE ON vectors BEGIN
+  UPDATE meta SET v = CAST(v AS INTEGER) + 1 WHERE k = 'data_gen'; END;
+CREATE TRIGGER IF NOT EXISTS gen_vectors_upd AFTER UPDATE ON vectors BEGIN
+  UPDATE meta SET v = CAST(v AS INTEGER) + 1 WHERE k = 'data_gen'; END;
 """
+# Caches of a kept worker (one entry per name): {name: (key, value)}. See Store.cached.
+_cache = {}
 ITEM_COLS = ["rowid", "entry_id", "folder_id", "msg_class", "subject", "sender", "sender_addr", "recipients",
              "sent_at", "attachments", "main_text", "embedded"]
 # Attachment states. pending: to read; extracting: being read now (a worker that dies here leaves it, and the
@@ -60,6 +83,7 @@ def _in(n):
 
 class Store:
     def __init__(self, path, model_rev):
+        self.path = path
         self.db = sqlite3.connect(path, timeout=30, isolation_level=None)
         self.db.executescript(SCHEMA)
         self._vocab = None
@@ -107,6 +131,22 @@ class Store:
 
     def set_meta(self, k, v):
         self.db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES(?, ?)", (k, json.dumps(v)))
+
+    def cached(self, name, args, build):
+        """build() once per index state: a kept worker (search window open) reuses the value in the next sessions until
+        a trigger changes data_gen. The key holds the file path, its created_at (a new file is another index) and args.
+        One entry per name: the old value is freed before the new one is built (memory). No cache for ':memory:', and none
+        inside an open transaction (a rollback could leave a value of rows that were never committed)."""
+        if self.path == ":memory:" or self.db.in_transaction:
+            return build()
+        key = (self.path, self.meta("created_at"), self.meta("data_gen"), *args)
+        hit = _cache.get(name)
+        if hit and hit[0] == key:
+            return hit[1]
+        _cache.pop(name, None)
+        val = build()
+        _cache[name] = (key, val)
+        return val
 
     # -- sync ---------------------------------------------------------------------------------
     def item_state(self, entry_ids):
@@ -290,8 +330,13 @@ class Store:
     def set_embedded(self, rowids):
         self.db.executemany("UPDATE items SET embedded=1 WHERE rowid=?", [(r,) for r in rowids])
 
-    def all_vectors(self, model_rev, dim, folder_ids):
-        """(item_rowids int64, chunk_seq int32, matrix float32 [N, dim]) for the folder scope."""
+    def all_vectors(self, model_rev, dim, folder_ids, cache=True):
+        """(item_rowids int64, chunk_seq int32, matrix float32 [N, dim]) for the folder scope, read-only. A kept worker
+        keeps the last result (Store.cached): the same arrays as a new query while data_gen does not change. 10-23 bench
+        (28,632 mails): the query took 44 ms (226 ms the first time); the matrix holds 2 KB per chunk in memory."""
+        if cache:
+            return self.cached("vectors", (model_rev, dim, tuple(folder_ids)),
+                               lambda: self.all_vectors(model_rev, dim, folder_ids, cache=False))
         rows = self.db.execute(
             "SELECT c.item_rowid, c.seq, v.vec FROM items i JOIN chunks c ON c.item_rowid=i.rowid"
             " JOIN vectors v ON v.text_hash=c.text_hash"
@@ -301,6 +346,8 @@ class Store:
         ids = np.fromiter((r[0] for r in rows), np.int64, n)
         seq = np.fromiter((r[1] for r in rows), np.int32, n)
         mat = np.frombuffer(b"".join(r[2] for r in rows), np.float16).reshape(n, dim).astype(np.float32)
+        for a in (ids, seq, mat):
+            a.setflags(write=False)  # shared by the sessions of a kept worker
         return ids, seq, mat
 
     # -- keyword search -----------------------------------------------------------------------

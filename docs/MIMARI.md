@@ -204,6 +204,12 @@ Outlook.exe (Klasik)
 - **Hazır model (20 Ekim, kullanıcı isteği):** pencere açıkken worker bir işten sonra kapanmaz, sonraki işi bekler; model
   bellekte kalır. Pencere açılınca yapılan durum okumasından sonra, kapsamda anlam indeksi varsa worker modeli arka planda
   yükler (`preload`). İlk arama da modeli beklemez. Bellek: pencere açıkken ~1–1,5 GB (2.19 ölçümü).
+  23 Ekim'den beri yükleme ayrı bir iş parçacığında (thread) çalışır. Yükleme sürerken başlayan arama klasörleri tarar ve
+  kelime sonuçlarını hemen gösterir; yalnız anlamsal adım yüklemenin bitmesini bekler. Model bir kez yüklenir.
+- **Bellek önbelleği (23 Ekim):** hazır bekleyen worker, aranan klasörlerin vektör matrisini ve filtre listelerini
+  (`done.facets`) bellekte tutar. İndeks dosyasındaki tetikleyiciler (trigger) her posta, parça ve vektör değişikliğinde
+  `meta.data_gen` değerini artırır; değer değişince önbellek yeniden okunur. Sonuçlar yeni sorguyla aynıdır. Bellek:
+  parça başına 2 KB (28.632 parça: 56 MB).
   Ayar **Yapay zekâyı hazır tut (dk)**: varsayılan 10, 0–120. 0 eski davranıştır: her iş kendi worker'ında, iş bitince
   süreç kapanır, ön yükleme yok. Süre son işten (ya da ön yüklemenin bitişinden) sayılır.
 - Aynı anda tek worker çalışır. Arama ve indeksleme birbirini dışlar: indeksleme sürerken **Ara**, onaydan sonra
@@ -280,9 +286,8 @@ oldu; gerçek kutuda süre henüz ölçülmedi. Arama artık bunu beklemez (sür
 | Vektör araması kaba kuvvet (tüm vektörler bellekte) | 100.000 parça için ~200 MB, birkaç yüz ms | ANN dizini (ör. HNSW) |
 | Güncelle, hiç tam indekslenmemiş klasördeki yeni postayı okumaz | Bu postalar sayılır; durum metni İndekslemeyi başlat'ı önerir | Klasör başına son okunan değişiklik zamanı (PST taşımasında davranış doğrulandıktan sonra) |
 | Filtreli kelime araması dosyanın en iyi 400 sonucuyla sınırlı | Çok yaygın bir sözcükte, filtredeki bir posta yalnız anlamıyla bulunabilir | FTS sorgusuna rowid kümesi koşulu |
-| Filtre listeleri her işte bütün postaları tarar | 100.000 postada ~0,2 sn | Kişiler tablosu |
+| Filtre listeleri indeks değişince bütün postaları tarar | 100.000 postada ~0,2 sn; değişiklik yoksa hazır worker listeyi bellekten verir | Kişiler tablosu |
 | Benzerlik eşikleri kalibre edilmedi | Yalnız sentetik 32 aileyle ölçüldü | Gerçek kutudan etiketli örneklerle kalibrasyon |
-| Pencere "Benzerlerini bul" ile açılınca ilk benzer arama modeli bekler | Pencere açılışındaki durum okuması modeli arka planda yükler (`preload`); worker yeni işi yükleme bitince alır (2.19'da soğuk yükleme ~5 sn). Benzer arama modeli kullanmaz | Benzer arama için ayrı, model yüklemeyen bir worker ya da `preload` içinde bekleyen `begin` denetimi |
 | Sağ tık menüsü SSH ile sınanamaz | `Context` nesnesinin `Selection` olduğu bir topluluk yanıtına dayanır; yedek yol (doğrudan öğe) ve OlbCheck üyeleri vardır | Kullanıcı kabul adımı (`docs/KURULUM.md`) |
 | Yazım hatası genişletmesi sözlükte doğrusal tarama | ~10^5 terimde birkaç yüz ms | Sözlük üzerinde trigram FTS |
 | Alıntı/imza ayıklama sezgiseldir | Alışılmadık biçimler ana metinde kalabilir | Daha çok kalıp |

@@ -72,8 +72,14 @@ cancel or an error still ends the process. No `begin` in time or stdin closed: e
 
 `begin.preload` (status mode with `keep_alive_s` > 0): after `done`, when the scope has vectors, the worker loads the
 model between sessions and sends `{"ev":"model","state":"loading"}`, then `{"ev":"model","state":"ready","load_s",
-"peak_rss_mb"}` or `{"ev":"model","state":"error","error":<type>}`. A `begin` that arrives during the load waits until
-the load ends. Without vectors (no semantic index) nothing is loaded.
+"peak_rss_mb"}` or `{"ev":"model","state":"error","error":<type>}`. The load runs on a thread: a `begin` that arrives
+during the load starts at once (scan, read, keyword results), and its first use of the model waits for this load (one
+load per process). The `model` events of the preload can come between the events of that session. Without vectors
+(no semantic index) nothing is loaded.
+
+A kept worker also keeps the vector matrix of the scope and `done.facets` in memory while the index file does not
+change (SQLite triggers count every change of mails, chunks and vectors in `meta.data_gen`). The results are the same as
+with a new query.
 
 The session token (`HM_SESSION`) is the same for all sessions of one process.
 

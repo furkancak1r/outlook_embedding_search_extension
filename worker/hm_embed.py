@@ -35,8 +35,11 @@ class FakeEncoder:
     params = 0
 
     def __init__(self, *_):
+        import time
+
         import numpy as np
         self.np = np
+        time.sleep(float(os.environ.get("HM_FAKE_LOAD_S") or 0))  # tests: a slow model load
 
     def encode(self, texts, max_tokens=MAX_DOC_TOKENS):
         import hashlib

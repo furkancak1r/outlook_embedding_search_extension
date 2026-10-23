@@ -161,8 +161,9 @@ gelen, değişen, taşınan ve silinen postaları işler. Güncel bir indekste b
    (ekran görüntüsü).
 2. **Ara**'ya basın. Önce kelime eşleşmeleri, sonra anlamsal sonuçlar görünür. Yeni postalar varsa önce indeksteki
    postalarla sonuçlar gelir. Yeni postalar indekslenince liste bir kez daha yenilenir. Seçtiğiniz posta seçili kalır.
-   Pencere açılınca yapay zekâ modeli arka planda hazırlanır (durum çubuğunda "Yapay zekâ hazır" yazar). Pencere açık
-   kaldıkça sonraki aramalar modeli beklemez.
+   Pencere açılınca yapay zekâ modeli arka planda hazırlanır (durum çubuğunda "Yapay zekâ hazır" yazar). Bu sırada da
+   arayabilirsiniz: kelime sonuçları hemen gelir, anlamsal sonuçlar model hazır olunca gelir. Pencere açık kaldıkça
+   sonraki aramalar modeli beklemez.
 3. Bir sonuç seçin. Alttaki önizlemede konu, kişi, tarih ve eşleşen bölüm görünür; aranan sözcükler sarı zeminle
    işaretlenir. Eşleşme bir ekin içindeyse önizlemenin üstünde "Ekte bulundu: dosya adı" yazar. Ek bir zip ise zip
    içindeki dosyanın adı da yazar (`Arsiv.zip › Klasör/rapor.docx`).

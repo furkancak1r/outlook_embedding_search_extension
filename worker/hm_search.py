@@ -233,7 +233,12 @@ def allowed(store, folder_ids, filters):
 def facets(store, limit=1000):
     """Values for the filter lists of the Ara tab, from the whole index file: senders [[key, name, address, mails]] and
     recipients [[key, name, mails]], most mails first, at most limit each.
-    ponytail: one pass over all mails at each 'done' (~0.2 s for 100,000 mails). Upgrade path: a people table."""
+    ponytail: one pass over all mails when the index changed (Store.cached; 10-23 bench, 28,632 mails: 47 ms, 108 ms the
+    first time); a kept worker reuses the lists at the next 'done'. Upgrade path: a people table."""
+    return store.cached("facets", (limit,), lambda: _facets(store, limit))
+
+
+def _facets(store, limit):
     senders, recips = {}, {}
     for _, name, addr, rec, _, _ in store.people():
         k = sender_key(name, addr)

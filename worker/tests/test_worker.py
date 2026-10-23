@@ -174,6 +174,44 @@ class StoreSearchTests(unittest.TestCase):
         self.assertFalse(any(r["eid"] == "E3" and "Cumartesi" in r["snippet"] for r in self.search("cumartesi gecesi")))
         self.assertEqual(self.search("yazılım güncellemesi")[0]["eid"], "E3")
 
+    def test_cache_follows_every_change(self):
+        """The vector matrix and the filter values of a kept worker: the same object while the index does not change, and
+        the same values as a new query after each kind of change (new mail, moved mail, deleted mail, new vector, new
+        attachment chunk, deleted vector). The arrays are read-only."""
+        import numpy as np
+        fs = ["F1", "F2"]
+        fresh = lambda: (self.store.all_vectors(REV, 512, fs, cache=False), hm_search._facets(self.store, 1000))
+        same = lambda: self.assertTrue(all(np.array_equal(a, b) for a, b in zip(self.store.all_vectors(REV, 512, fs), fresh()[0]))
+                                       and hm_search.facets(self.store) == fresh()[1])
+        first = self.store.all_vectors(REV, 512, fs)
+        self.assertIs(self.store.all_vectors(REV, 512, fs)[2], first[2])  # no change: the same arrays
+        self.assertIs(hm_search.facets(self.store), hm_search.facets(self.store))
+        self.assertFalse(first[2].flags.writeable)
+        same()
+        steps = [
+            lambda: hm_index.ingest(self.store, mail("E9", "Yeni", "Yeni posta metni.", sender="Zeynep Arslan"), 2, REV),
+            lambda: hm_index.ingest(self.store, mail("E3", "Sunucu bakımı", "Cumartesi gecesi planlı bakım var.",
+                                                     "2026-09-20T09:00:00", "Sarah Miller", folder="F2"), 2, REV),
+            lambda: self.store.delete_item(self.store.item_state(["E2"])["E2"][0]),
+            lambda: hm_index.embed_pending(self.store, lambda: self.enc, fs, REV),
+            lambda: self.store.set_att_index(self.store.item_state(["E1"])["E1"][0], "ek metni",
+                                             [(1, 0, 8, "hash-att-1")]),
+            lambda: self.store.db.execute("DELETE FROM vectors WHERE text_hash IN (SELECT text_hash FROM vectors LIMIT 1)"),
+        ]
+        for i, step in enumerate(steps):
+            gen = self.store.meta("data_gen")
+            if i == 3:
+                step()  # embed_pending owns its transactions
+            else:
+                with self.store.tx():
+                    step()
+            self.assertGreater(self.store.meta("data_gen"), gen)
+            same()
+        with self.store.tx():  # only a flag: the index state for the caches stays
+            gen = self.store.meta("data_gen")
+            self.store.mark_stale([self.store.item_state(["E1"])["E1"][0]])
+        self.assertEqual(self.store.meta("data_gen"), gen)
+
     def test_sweep_removes_deleted(self):
         with self.store.tx():
             state = self.store.item_state(["E1", "E2", "E3"])
@@ -629,6 +667,32 @@ class ProtocolTests(unittest.TestCase):
             self.close(p)
             self.assertEqual(p.returncode, 0)
             self.assertLess(time.time() - t0, 5)
+
+    def test_search_during_preload(self):
+        """Window open, then Ara at once: the model loads on a thread (2 s here). The search scans and sends its keyword
+        results during the load, waits for that load (one load, not two) and gives semantic final results."""
+        with tempfile.TemporaryDirectory() as d:
+            mails = [mail("E1", "Kargo faturası", "Eylül kargo faturası.", "2026-09-12T09:00:00"),
+                     mail("E2", "Sunucu bakımı", "Cumartesi bakım.", "2026-09-20T09:00:00")]
+            self.run_session(d, mails, "", mode="index")
+            env = dict(os.environ, HM_SESSION="s" * 32, PYTHONIOENCODING="utf-8", HM_FAKE_LOAD_S="2")
+            p = subprocess.Popen([sys.executable, "-I", "-B", "-X", "utf8", str(WORKER / "hm_worker.py"), "--data", d,
+                                  "--model", "unused", "--fake-encoder"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8")
+            t0 = time.time()
+            self.assertEqual([e["ev"] for e in self.begin_status(p, keep_alive_s=30, preload=True)], ["hello", "done"])
+            ev, _ = self.play(p, mails, "kargo faturası", keep_alive_s=30)
+            ev += self.events(p, "model") if "ready" not in [e.get("state") for e in ev] else []
+            names = [e["ev"] if e["ev"] != "results" else e["stage"] for e in ev]
+            self.assertLess(names.index("keyword"), names.index("final"))
+            self.assertEqual([e["state"] for e in ev if e["ev"] == "model"], ["loading", "ready"])
+            self.assertLess(names.index("keyword"), names.index("model", names.index("model") + 1))  # before "ready"
+            done = [e for e in ev if e["ev"] == "done"][0]
+            final = [e for e in ev if e["ev"] == "results" and e["stage"] == "final"][0]
+            self.assertEqual((done["status"], final["semantic"], final["results"][0]["eid"]), ("ok", True, "E1"))
+            self.assertLess(time.time() - t0, 3.8)  # one 2 s load, not two
+            self.close(p)
+            self.assertEqual(p.returncode, 0)
 
     def test_keep_alive_ends(self):
         """No new session within keep_alive_s -> exit 0. An error in a kept session -> exit 2. Cancel -> exit 3."""
