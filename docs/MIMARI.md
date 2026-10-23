@@ -39,7 +39,8 @@ Outlook.exe (Klasik)
 - Geç bağlama (late binding): PIA gerekmez. AnyCPU derleme 32 ve 64 bit Outlook'ta çalışır.
 - Kayıt yalnız HKCU altındadır; yönetici yetkisi gerekmez.
 - Klasör listesi `Folder.GetTable()` ile okunur (öğe açmadan EntryID, değişiklik zamanı, sınıf, tarih).
-  Yalnız yeni ya da değişen öğelerin içeriği okunur.
+  Satırlar `Table.GetArray(500)` ile 500'lük paketlerle alınır: değerler `GetNextRow` ile aynıdır, Outlook'a
+  satır başına bir çağrı yerine paket başına bir çağrı gider. Yalnız yeni ya da değişen öğelerin içeriği okunur.
 
 ### 2. Yeni Outlook: değerlendirildi, v1'de yok
 

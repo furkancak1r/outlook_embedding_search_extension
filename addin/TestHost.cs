@@ -277,6 +277,18 @@ namespace HatirMail
                 bool threw = false;
                 try { Connect.MailRef(new object(), out eid, out sid, out fid); } catch { threw = true; }
                 check("no_mail", threw);
+                // Folder list (Table.GetArray): the documented (column, row) order and (row, column), also for 4 x 4.
+                var d = new DateTime(2026, 10, 23, 9, 5, 7);
+                Func<int, object[]> row = i => new object[] { "E" + i, d.AddMinutes(i), "IPM.Note", i == 1 ? (object)null : d };
+                foreach (int n in new[] { 1, 3, 4, 500 })
+                {
+                    Array cr = Array.CreateInstance(typeof(object), 4, n), rc = Array.CreateInstance(typeof(object), n, 4);
+                    for (int r = 0; r < n; r++) for (int c = 0; c < 4; c++) { cr.SetValue(row(r)[c], c, r); rc.SetValue(row(r)[c], r, c); }
+                    Func<List<object[]>, bool> same = got => got.Count == n && Enumerable.Range(0, n).All(r =>
+                        (string)got[r][0] == "E" + r && (string)got[r][1] == d.AddMinutes(r).ToString("yyyy-MM-dd'T'HH:mm:ss") &&
+                        (string)got[r][2] == "IPM.Note" && (string)got[r][3] == (r == 1 ? "" : "2026-10-23T09:05:07"));
+                    check("manifest_rows_" + n, same(OutlookSource.ManifestRows(cr)) && same(OutlookSource.ManifestRows(rc)));
+                }
             }
             catch (Exception ex) { Console.WriteLine("ribbon_check exception " + ex.GetType().Name + ": " + ex.Message); ok = false; }
             Console.WriteLine(ok ? "PASS" : "FAIL");

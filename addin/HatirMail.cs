@@ -567,20 +567,39 @@ namespace HatirMail
             Release(cols);
             try
             {
+                // Table.GetArray(n) "operates as if Table.GetNextRow is called n times" (learn.microsoft.com): the same
+                // rows and values with one late-bound call for 500 rows, not six calls for each row (live timing log
+                // 10-23: about 1.2 ms for each row with GetNextRow). The caller pumps messages only every 500 rows.
                 while (!(bool)table.EndOfTable)
                 {
                     if (cancelled()) yield break;
-                    dynamic row = table.GetNextRow();
-                    object[] v;
-                    try
-                    {
-                        v = new object[] { (string)row[1], Iso(row[2]), (string)row[3], Iso(row[4]) };
-                    }
-                    finally { Release(row); }
-                    yield return v;
+                    Array a = table.GetArray(500);
+                    if (a == null || a.Length == 0) yield break;
+                    var rows = ManifestRows(a);
+                    foreach (var v in rows) yield return v;
+                    if (rows.Count < 500) yield break; // GetArray gives the remaining rows: the end of the table
                 }
             }
             finally { Release(table); Release(folder); }
+        }
+
+        /// <summary>The rows [eid, lastMod, class, date] of a Table.GetArray result with the 4 manifest columns. The
+        /// documentation gives the index order (column, row). The shape and, for a 4 x 4 array, the type of one cell
+        /// (an entry id is a string, a date is not) give the order, so the rows are also correct for (row, column).
+        /// Why: with a wrong order a 4 x 4 array gives wrong entry ids, and the worker then deletes known mails.</summary>
+        public static List<object[]> ManifestRows(Array a)
+        {
+            int b0 = a.GetLowerBound(0), b1 = a.GetLowerBound(1);
+            bool colFirst = a.GetLength(0) == 4 && (a.GetLength(1) != 4 || a.GetValue(b0, b1 + 1) is string);
+            int n = colFirst ? a.GetLength(1) : a.GetLength(0);
+            var rows = new List<object[]>(n);
+            var v = new object[4];
+            for (int r = 0; r < n; r++)
+            {
+                for (int c = 0; c < 4; c++) v[c] = colFirst ? a.GetValue(b0 + c, b1 + r) : a.GetValue(b0 + r, b1 + c);
+                rows.Add(new object[] { (string)v[0], Iso(v[1]), (string)v[2], Iso(v[3]) });
+            }
+            return rows;
         }
 
         public Dictionary<string, object> Read(string eid, string storeId, string folderId)
