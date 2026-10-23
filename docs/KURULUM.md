@@ -187,22 +187,39 @@ arama işlemi çalışır.
 
 ### Filtreler: gönderen, alıcı, klasör, tarih ve ek
 
-Arama kutusunun altında iki satır açılır liste vardır:
+Arama kutusunun altında filtre alanları vardır. Alanlar üç eşit sütunda, alt alta hizalıdır:
 
 - Birinci satır: **Gönderen** (Alt+N), **Alıcı** (Alt+L), **Klasör** (Alt+S).
 - İkinci satır: **Tarih** (Alt+T), **Ek** (Alt+K) ve **Filtreleri temizle** düğmesi (Alt+F).
+- Üçüncü satır yalnız **Özel aralık…** seçilince görünür: **Başlangıç** ve **Bitiş** tarihleri.
 
 1. Hatırladığınız değeri seçin.
 2. **Ara**'ya basın. Sonuçlarda yalnız bu filtrelere uyan postalar görünür. Durum çubuğu etkin filtreleri yazar.
 
-- **Tarih:** Son 7 gün, Son 30 gün, Son 3 ay, Son 12 ay, Bu yıl, Geçen yıl ya da **Özel aralık…**. Özel aralıkta iki
-  tarih kutusu görünür; iki gün de aralığa dahildir. Tarih filtresi kesindir: aralık dışındaki posta görünmez. Sorguya
-  yazdığınız tarih ("geçen ay") ise yalnız sıralamayı etkiler.
+**Gönderen, Alıcı ve Klasör listelerinde arama:** Liste açılınca en üstte bir arama alanı vardır.
+
+1. Listeye tıklayın ya da liste seçiliyken yazmaya başlayın.
+2. Adın ya da e-posta adresinin bir bölümünü yazın. Büyük-küçük harf ve Türkçe harfler fark etmez: "cakir" yazınca
+   "Çakır" da bulunur. Birden çok sözcük yazarsanız hepsini içeren satırlar kalır.
+3. Ok tuşlarıyla seçin ve Enter'a basın ya da satıra tıklayın. Esc listeyi kapatır, seçim değişmez.
+
+**Birden çok klasör:** Klasör listesinde her satırın bir onay kutusu vardır.
+
+1. Aramak istediğiniz klasörleri işaretleyin (tıklayın ya da Enter'a basın). Liste açık kalır.
+2. Esc'e basın ya da listenin dışına tıklayın. Kutuda seçtiğiniz klasör ya da "3 klasör seçili" yazar.
+3. **Ara**'ya basın. Yalnız işaretli klasörler aranır.
+
+"(tümü)" satırını işaretlemek bütün işaretleri kaldırır.
+
+- **Tarih:** Son 7 gün, Son 30 gün, Son 3 ay, Son 12 ay, Bu yıl, Geçen yıl ya da **Özel aralık…**. Özel aralıkta
+  Başlangıç ve Bitiş tarihleri görünür; iki gün de aralığa dahildir. Tarih filtresi kesindir: aralık dışındaki posta
+  görünmez. Sorguya yazdığınız tarih ("geçen ay") ise yalnız sıralamayı etkiler.
 - **Ek:** Ekli, Eksiz, Excel, PDF, Word, PowerPoint, Resim ya da Zip, RAR. Postadaki ek adlarına bakılır. Metnin içine
   yapıştırılmış resimler (image001.png gibi) sayılmaz.
 - Gönderen ve alıcı listeleri indeksteki postalardan dolar (en sık 1.000 kişi). Yeni bir kişi ilk indekslemeden ya da
   Güncelle'den sonra görünür.
-- Klasör listesi İndeks sekmesinde işaretli klasörlerdir. Alt klasörler ayrı satırdır ve seçilen klasöre dahil değildir.
+- Klasör listesi İndeks sekmesinde işaretli klasörlerdir. Alt klasörler ayrı satırdır ve seçilen klasöre dahil değildir;
+  bir alt klasörü de aramak için onu da işaretleyin.
 - "(tümü)" o filtreyi kaldırır. **Filtreleri temizle** hepsini kaldırır. Filtre değişince arama kendiliğinden yeniden
   başlamaz; **Ara**'ya basın.
 

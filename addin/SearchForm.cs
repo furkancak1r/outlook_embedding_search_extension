@@ -40,12 +40,15 @@ namespace HatirMail
         SearchHistory history; // recent and saved searches (data\searches.json)
         readonly Label scopeLine = new Label();
         // Filters (Ara tab): sender and recipient values from the worker (done.facets), folder = a checked İndeks folder.
-        readonly ComboBox senderBox = new ComboBox(), recipientBox = new ComboBox(), folderBox = new ComboBox();
-        // Second filter row: date range (presets or "Özel aralık…" with two date pickers) and attachments; worker keys
+        // These three lists open with a search field (SearchList); the folder list takes more than one folder (check boxes).
+        readonly ComboBox senderBox = new SearchList(), recipientBox = new SearchList();
+        readonly SearchList folderBox = new SearchList(true);
+        // Date range (presets or "Özel aralık…" with two date fields in a third row) and attachments; worker keys
         // date_from / date_to (ISO local time, to = exclusive) and attach.
         readonly ComboBox dateBox = new ComboBox(), attFilterBox = new ComboBox();
         readonly DateTimePicker dateFrom = new DateTimePicker(), dateTo = new DateTimePicker();
-        readonly Label dateDash = new Label { Text = "–", AutoSize = true, Anchor = AnchorStyles.Left };
+        readonly TableLayoutPanel filterTable;
+        readonly List<Control> rangeRow = new List<Control>(); // the third filter row: only for "Özel aralık…"
         readonly Button clearFiltersBtn;
         bool fillingFilters;
         readonly ListView list = new ListView();
@@ -82,6 +85,7 @@ namespace HatirMail
         bool purgeAsked;    // the next status check applies a new folder exclusion: it reports the deleted mails
         string notice;      // that report: it stays in front of the model texts until the next session starts
         string filterNote = ""; // the filters of the running or last search (status text)
+        int previewWant; bool fitQueued; // preview height: the default or the splitter; FitPreview can make it smaller
         readonly Dictionary<string, FolderCov> cov = new Dictionary<string, FolderCov>();
         WorkerSession session;
         WorkerProcess warm; // kept worker between sessions (window open, keep-alive on): the model stays loaded
@@ -164,62 +168,63 @@ namespace HatirMail
             qrow.Controls.Add(stopBtn, 3, 0); qrow.Controls.Add(openBtn, 4, 0);
             var hint = Wrap(new Label { ForeColor = SystemColors.GrayText, Padding = new Padding(0, S(4), 0, 0),
                                         Text = "İpucu: kişi, konu, yaklaşık tarih ya da ekteki bir sözcük yazın. Örnek: geçen ay Ahmet'ten gelen kargo faturası" });
-            // Filter row: three drop-down lists in equal columns; "(tümü)" = no filter. A change applies at the next Ara.
-            // The table lays out each list with the height of a new list (default font), centered in the row; Windows then
+            // Filters: one table, so that the fields line up in three columns of the same width. "(tümü)" = no filter; a
+            // change applies at the next Ara.
+            //   Gönderen  [list]   Alıcı [list]   Klasör [list]
+            //   Tarih     [list]   Ek    [list]           [Filtreleri temizle]
+            //   Başlangıç [date]   Bitiş [date]     (this row only for "Özel aralık…")
+            // The table lays out a list with the height of a new list (default font), centered in the row; Windows then
             // makes the list taller (window font), and the row cut it at the bottom (2.19, 2x test: 22 px in the table, 40
-            // px on screen). So: the row height comes from the real list height, and the lists start at the row top.
-            var frow = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 6, RowCount = 1, AutoSize = true, Padding = new Padding(0, S(4), 0, 0), Font = Font };
-            int col = 0;
-            foreach (var f in new[] { Tuple.Create("Gö&nderen:", senderBox, "Gönderen filtresi"), Tuple.Create("A&lıcı:", recipientBox, "Alıcı filtresi"),
-                                      Tuple.Create("Kla&sör:", folderBox, "Klasör filtresi") })
+            // px on screen). So: fixed row heights from the real control heights (after Add: the font of the table), and
+            // each field starts at a fixed distance from the row top. The label columns have a fixed width: the fields do
+            // not move when the third row shows. The table height is set, not AutoSize: FilterChanged adds the third row.
+            filterTable = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 6, RowCount = 3, Padding = new Padding(0, S(4), 0, 0), Font = Font };
+            var cells = new[] { Tuple.Create("Gö&nderen:", (Control)senderBox, "Gönderen filtresi"), Tuple.Create("A&lıcı:", (Control)recipientBox, "Alıcı filtresi"),
+                                Tuple.Create("Kla&sör:", (Control)folderBox, "Klasör filtresi"), Tuple.Create("&Tarih:", (Control)dateBox, "Tarih filtresi"),
+                                Tuple.Create("E&k:", (Control)attFilterBox, "Ek filtresi"), Tuple.Create("", (Control)clearFiltersBtn, ""),
+                                Tuple.Create("Başlangıç:", (Control)dateFrom, "Tarih filtresi: başlangıç"), Tuple.Create("Bitiş:", (Control)dateTo, "Tarih filtresi: bitiş (dahil)") };
+            var labelW = new int[3];
+            for (int i = 0; i < cells.Length; i++)
             {
-                frow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); frow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.3F));
-                frow.Controls.Add(new Label { Text = f.Item1, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(col == 0 ? 0 : S(10), 0, S(4), 0) }, col++, 0);
-                var box = f.Item2;
-                box.DropDownStyle = ComboBoxStyle.DropDownList; box.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top; box.Margin = new Padding(0, S(2), 0, S(2));
-                box.AccessibleName = f.Item3; box.MaxDropDownItems = 20;
-                box.Items.Add(Choice.All); box.SelectedIndex = 0;
-                box.SelectedIndexChanged += (s, e) => FilterChanged();
-                frow.Controls.Add(box, col++, 0);
+                int row = i / 3, col = i % 3 * 2;
+                var c = cells[i].Item2;
+                c.Anchor = c is Button ? AnchorStyles.Right | AnchorStyles.Top : AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
+                if (cells[i].Item1.Length > 0)
+                {
+                    // GDI text now (as at the end of this constructor): the column width comes from this measure.
+                    var l = new Label { Text = cells[i].Item1, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(col == 0 ? 0 : S(14), 0, S(6), 0), UseCompatibleTextRendering = false };
+                    filterTable.Controls.Add(l, col, row);
+                    labelW[col / 2] = Math.Max(labelW[col / 2], l.PreferredWidth + l.Margin.Horizontal);
+                    c.AccessibleName = cells[i].Item3;
+                    if (row == 2) rangeRow.Add(l);
+                }
+                filterTable.Controls.Add(c, col + 1, row);
+                if (row == 2) rangeRow.Add(c);
             }
-            frow.RowStyles.Add(new RowStyle(SizeType.Absolute, senderBox.PreferredHeight + senderBox.Margin.Vertical)); // after Add: the font of the row
-            // Second filter row: Tarih [list] [from – to: only for "Özel aralık…"]  Ek [list]  [Filtreleri temizle].
-            var frow2 = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 8, RowCount = 1, AutoSize = true, Padding = new Padding(0, S(2), 0, 0), Font = Font };
-            foreach (var w in new[] { SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.AutoSize, SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize })
-                frow2.ColumnStyles.Add(w == SizeType.Percent ? new ColumnStyle(SizeType.Percent, 50F) : new ColumnStyle(SizeType.AutoSize));
-            foreach (var x in new[] { Tuple.Create(dateBox, "Tarih filtresi"), Tuple.Create(attFilterBox, "Ek filtresi") })
+            foreach (int w in labelW) { filterTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, w)); filterTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.3F)); }
+            foreach (var box in AllFilterBoxes)
             {
-                var box = x.Item1;
-                box.DropDownStyle = ComboBoxStyle.DropDownList; box.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top; box.Margin = new Padding(0, S(2), 0, S(2));
-                box.AccessibleName = x.Item2; box.MaxDropDownItems = 20;
+                box.DropDownStyle = ComboBoxStyle.DropDownList; box.MaxDropDownItems = 20;
                 box.Items.Add(Choice.All);
-                box.SelectedIndexChanged += (s, e) => FilterChanged();
             }
             foreach (var c in new[] { "7d|Son 7 gün", "30d|Son 30 gün", "3m|Son 3 ay", "12m|Son 12 ay", "year|Bu yıl", "lastyear|Geçen yıl", "custom|Özel aralık…" })
                 dateBox.Items.Add(new Choice { Key = c.Split('|')[0], Text = c.Split('|')[1] });
             foreach (var c in new[] { "yes|Ekli", "no|Eksiz", "excel|Excel", "pdf|PDF", "word|Word", "powerpoint|PowerPoint", "image|Resim", "archive|Zip, RAR" })
                 attFilterBox.Items.Add(new Choice { Key = c.Split('|')[0], Text = c.Split('|')[1] });
-            fillingFilters = true; // the start values are not a user change
-            dateBox.SelectedIndex = attFilterBox.SelectedIndex = 0;
+            foreach (var p in new[] { dateFrom, dateTo }) { p.Format = DateTimePickerFormat.Custom; p.CustomFormat = "dd.MM.yyyy"; }
             dateFrom.Value = DateTime.Today.AddMonths(-1); dateTo.Value = DateTime.Today;
-            fillingFilters = false;
-            foreach (var p in new[] { dateFrom, dateTo })
-            {
-                p.Format = DateTimePickerFormat.Custom; p.CustomFormat = "dd.MM.yyyy"; p.Visible = false;
-                p.Width = TextRenderer.MeasureText("30.09.2026", Font).Width + S(40); p.Anchor = AnchorStyles.Left | AnchorStyles.Top; p.Margin = new Padding(S(6), S(2), 0, S(2));
-                p.ValueChanged += (s, e) => FilterChanged();
-            }
-            dateFrom.AccessibleName = "Tarih filtresi: başlangıç"; dateTo.AccessibleName = "Tarih filtresi: bitiş (dahil)";
-            dateDash.Margin = new Padding(S(4), 0, 0, 0); dateDash.Visible = false;
-            clearFiltersBtn.Anchor = AnchorStyles.Left | AnchorStyles.Top; clearFiltersBtn.Margin = new Padding(S(10), S(1), 0, S(1)); clearFiltersBtn.Enabled = false;
+            clearFiltersBtn.Padding = new Padding(S(10), 0, S(10), 0); clearFiltersBtn.Enabled = false; // as high as a list
+            int rowH = new[] { senderBox.PreferredHeight, dateFrom.PreferredHeight, clearFiltersBtn.PreferredSize.Height }.Max() + S(6);
+            foreach (var c in cells.Select(x => x.Item2))
+                c.Margin = new Padding(0, (rowH - (c is ComboBox ? ((ComboBox)c).PreferredHeight : c is DateTimePicker ? ((DateTimePicker)c).PreferredHeight : c.PreferredSize.Height)) / 2, 0, 0);
+            foreach (int h in new[] { rowH, rowH, 0 }) filterTable.RowStyles.Add(new RowStyle(SizeType.Absolute, h)); // FilterChanged sets row 3
+            foreach (var c in rangeRow) c.Visible = false;
+            filterTable.Height = filterTable.Padding.Vertical + 2 * rowH;
+            // The start values above are not a user change: the handlers come after them.
+            foreach (var box in AllFilterBoxes) { box.SelectedIndex = 0; box.SelectedIndexChanged += (s, e) => FilterChanged(); }
+            folderBox.CheckedChanged += (s, e) => FilterChanged();
+            foreach (var p in new[] { dateFrom, dateTo }) p.ValueChanged += (s, e) => FilterChanged();
             clearFiltersBtn.Click += (s, e) => ClearFilters();
-            frow2.Controls.Add(new Label { Text = "&Tarih:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, S(4), 0) }, 0, 0);
-            frow2.Controls.Add(dateBox, 1, 0); frow2.Controls.Add(dateFrom, 2, 0); frow2.Controls.Add(dateDash, 3, 0); frow2.Controls.Add(dateTo, 4, 0);
-            frow2.Controls.Add(new Label { Text = "E&k:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(S(10), 0, S(4), 0) }, 5, 0);
-            frow2.Controls.Add(attFilterBox, 6, 0); frow2.Controls.Add(clearFiltersBtn, 7, 0);
-            // As in the first row: the row height comes from the real control heights (after Add: the font of the row).
-            frow2.RowStyles.Add(new RowStyle(SizeType.Absolute, new[] { dateBox.PreferredHeight + dateBox.Margin.Vertical, dateFrom.PreferredHeight + dateFrom.Margin.Vertical,
-                                                                         clearFiltersBtn.PreferredSize.Height + clearFiltersBtn.Margin.Vertical }.Max()));
             Wrap(scopeLine); scopeLine.Padding = new Padding(0, S(4), 0, S(8));
             scopeLine.Cursor = Cursors.Hand; scopeLine.Click += (s, e) => tabs.SelectedTab = tabIndex;
             list.Dock = DockStyle.Fill; list.View = View.Details; list.FullRowSelect = true; list.MultiSelect = false;
@@ -264,13 +269,19 @@ namespace HatirMail
             openAttBtn.Click += (s, e) => OpenAttachment();
             preview.Dock = DockStyle.Fill;
             // 160 (was 190): the filter row takes its place, the result list keeps its height.
-            previewBox.Dock = DockStyle.Bottom; previewBox.Height = S(160);
+            previewBox.Dock = DockStyle.Bottom; previewBox.Height = previewWant = S(160);
             previewBox.Controls.Add(preview); previewBox.Controls.Add(attBar);
             attBar.TabIndex = 0; preview.TabIndex = 1;
-            qrow.TabIndex = 0; frow.TabIndex = 1; frow2.TabIndex = 2; list.TabIndex = 3; previewBox.TabIndex = 4;
-            tabSearch.Controls.Add(list); tabSearch.Controls.Add(new Splitter { Dock = DockStyle.Bottom, Height = S(6), TabStop = false });
-            tabSearch.Controls.Add(previewBox); tabSearch.Controls.Add(scopeLine); tabSearch.Controls.Add(hint); tabSearch.Controls.Add(frow2);
-            tabSearch.Controls.Add(frow); tabSearch.Controls.Add(qrow);
+            qrow.TabIndex = 0; filterTable.TabIndex = 1; list.TabIndex = 2; previewBox.TabIndex = 3;
+            var split = new Splitter { Dock = DockStyle.Bottom, Height = S(6), TabStop = false };
+            split.SplitterMoved += (s, e) => previewWant = previewBox.Height; // the user's preview height
+            // The result list keeps room for its header and 3 rows: in a small window, or with the date row of the
+            // filters, the preview gives way (2.19 layout test, minimum window: the list showed only its header). After
+            // the layout (Resize comes from it), so that the list height is the new one.
+            list.Resize += (s, e) => { if (IsHandleCreated && !fitQueued) { fitQueued = true; BeginInvoke((Action)FitPreview); } };
+            tabSearch.Controls.Add(list); tabSearch.Controls.Add(split);
+            tabSearch.Controls.Add(previewBox); tabSearch.Controls.Add(scopeLine); tabSearch.Controls.Add(hint); tabSearch.Controls.Add(filterTable);
+            tabSearch.Controls.Add(qrow);
             Launch = path => { using (Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, ErrorDialog = true, ErrorDialogParentHandle = Handle })) { } };
 
             // ---- İndeks: store, bars, live phase, start/stop, folders with their state
@@ -829,19 +840,237 @@ namespace HatirMail
 
         static string KeyOf(ComboBox b) { var c = b.SelectedItem as Choice; return c != null ? c.Key : null; }
 
+        /// <summary>A filter list that opens with a search field (Gönderen, Alıcı, Klasör: many names and e-mail addresses).
+        /// Each word in the field must be in the item text, without case and Turkish marks ("cakir" finds "Çakır").
+        /// Up/Down/PageUp/PageDown move, Enter or a click takes the item, Esc closes. A letter on the closed list opens it
+        /// with that letter. Item 0 is "(tümü)": it shows only while the field is empty.
+        /// Multi (Klasör): check boxes; a click or Enter turns a row on or off and the list stays open; the keys are in
+        /// Checked. "(tümü)" is on when no row is on; turning it on clears the rows. Item 0 of the closed box shows the
+        /// choice: "(tümü)", the name, or "3 klasör seçili" (ponytail: the word "klasör": only the folder list is Multi).
+        /// ponytail: a WinForms ToolStripDropDown (it closes on an outside click, also in the Outlook message loop); the
+        /// native list stays for a screen reader ("expand").</summary>
+        public sealed class SearchList : ComboBox
+        {
+            readonly ToolStripDropDown popup = new ToolStripDropDown { AutoClose = true, Padding = Padding.Empty };
+            readonly ToolStripControlHost host;
+            readonly Panel body = new Panel(), gap = new Panel { Dock = DockStyle.Top };
+            public readonly TextBox Field = new TextBox { Dock = DockStyle.Top };                                  // test hooks
+            public readonly ListBox Matches;
+            public readonly bool Multi;
+            public readonly HashSet<string> Checked = new HashSet<string>(); // Multi: the keys of the rows that are on
+            public event EventHandler CheckedChanged;                         // Multi: a row turned on or off by the user
+            bool syncing;
+            public bool PopupOpen { get; private set; }
+            public bool PopupVisible { get { return popup.Visible; } } // test hook
+            public Control PopupBody { get { return body; } }
+            int closedAt = Environment.TickCount - 10000;
+
+            public SearchList() : this(false) { }
+
+            public SearchList(bool multi)
+            {
+                Multi = multi;
+                Matches = multi ? new CheckList { CheckOnClick = true } : new ListBox();
+                Matches.Dock = DockStyle.Fill; Matches.IntegralHeight = false; Matches.BorderStyle = BorderStyle.None;
+                body.Controls.Add(Matches); body.Controls.Add(gap); body.Controls.Add(Field);
+                host = new ToolStripControlHost(body) { AutoSize = false, Margin = Padding.Empty, Padding = Padding.Empty };
+                popup.Items.Add(host);
+                popup.Closed += (s, e) => { PopupOpen = false; closedAt = Environment.TickCount; };
+                Field.TextChanged += (s, e) => Refilter();
+                // IsInputKey: these keys go to KeyDown, not to the dialog keys of the drop-down (ToolStripDropDown moves
+                // between its items with them). In Outlook, WinForms sees the keys through its message hook while the
+                // drop-down is open (ToolStripManager.ModalMenuFilter), so PreviewKeyDown also comes there.
+                Field.PreviewKeyDown += (s, e) => { if (Nav(e.KeyCode)) e.IsInputKey = true; };
+                Field.KeyDown += (s, e) => { if (Nav(e.KeyCode)) { e.Handled = e.SuppressKeyPress = true; FieldKey(e.KeyCode); } };
+                if (multi) ((CheckedListBox)Matches).ItemCheck += (s, e) => OnItemCheck(e);
+                else Matches.MouseClick += (s, e) => { int i = Matches.IndexFromPoint(e.Location); if (i >= 0) Take(Matches.Items[i]); };
+            }
+
+            /// <summary>Check boxes at the size of the row: CheckedListBox draws them at 13 px when the program has no
+            /// high-DPI setting (outlook.exe.config has none), too small on a 2x screen (2.19 layout test, 10-23). A click
+            /// anywhere on the row turns it on or off (CheckOnClick), so the hit area does not change.</summary>
+            sealed class CheckList : CheckedListBox
+            {
+                protected override void OnDrawItem(DrawItemEventArgs e)
+                {
+                    if (e.Index < 0 || e.Index >= Items.Count) return;
+                    e.DrawBackground();
+                    int sz = Math.Max(11, e.Bounds.Height * 3 / 5), pad = Math.Max(2, sz / 4);
+                    var box = new Rectangle(e.Bounds.X + pad, e.Bounds.Y + (e.Bounds.Height - sz) / 2, sz, sz);
+                    if (Items[e.Index] is Choice) // not for the note "(eşleşen yok)"
+                        ControlPaint.DrawCheckBox(e.Graphics, box, ButtonState.Flat | (GetItemChecked(e.Index) ? ButtonState.Checked : ButtonState.Normal));
+                    bool sel = (e.State & DrawItemState.Selected) != 0;
+                    TextRenderer.DrawText(e.Graphics, GetItemText(Items[e.Index]), e.Font, new Rectangle(box.Right + pad, e.Bounds.Y, e.Bounds.Right - box.Right - pad, e.Bounds.Height),
+                                          sel ? SystemColors.HighlightText : ForeColor,
+                                          TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                    e.DrawFocusRectangle();
+                }
+            }
+
+            /// <summary>Multi: a row turns on or off (click, Space, Enter). A note row and "(tümü)" alone do not turn off.</summary>
+            void OnItemCheck(ItemCheckEventArgs e)
+            {
+                if (syncing) return;
+                var c = Matches.Items[e.Index] as Choice;
+                bool on = e.NewValue == CheckState.Checked;
+                if (c == null || c == Choice.All && !on) { e.NewValue = e.CurrentValue; return; }
+                if (c == Choice.All) Checked.Clear(); else if (on) Checked.Add(c.Key); else Checked.Remove(c.Key);
+                SyncChecks(e.Index); // the other rows; this row takes e.NewValue
+                ShowChecked();
+                if (CheckedChanged != null) CheckedChanged(this, EventArgs.Empty);
+            }
+
+            void SyncChecks(int skip)
+            {
+                var clb = (CheckedListBox)Matches;
+                syncing = true;
+                for (int i = 0; i < clb.Items.Count; i++)
+                {
+                    var c = clb.Items[i] as Choice;
+                    if (i != skip && c != null) clb.SetItemChecked(i, c == Choice.All ? Checked.Count == 0 : Checked.Contains(c.Key));
+                }
+                syncing = false;
+            }
+
+            /// <summary>Multi: the texts of the rows that are on, in list order.</summary>
+            public List<string> CheckedTexts() { return Items.Cast<object>().Skip(1).OfType<Choice>().Where(c => Checked.Contains(c.Key)).Select(c => c.Text).ToList(); }
+
+            /// <summary>Multi: item 0 of the closed box shows the choice (it is always the selected item).</summary>
+            public void ShowChecked()
+            {
+                var t = CheckedTexts();
+                var top = t.Count == 0 ? Choice.All : new Choice { Text = t.Count == 1 ? t[0] : t.Count + " klasör seçili" };
+                if (Items.Count == 0) Items.Add(top); else if (Items[0].ToString() != top.Text) Items[0] = top;
+                SelectedIndex = 0;
+            }
+
+            /// <summary>Multi: set the rows that are on (test hook; "Filtreleri temizle" gives an empty list).</summary>
+            public void SetChecked(IEnumerable<string> keys)
+            {
+                Checked.Clear(); Checked.UnionWith(keys);
+                ShowChecked();
+                if (CheckedChanged != null) CheckedChanged(this, EventArgs.Empty);
+            }
+
+            static bool Nav(Keys k) { return k == Keys.Up || k == Keys.Down || k == Keys.PageUp || k == Keys.PageDown || k == Keys.Enter || k == Keys.Escape; }
+
+            /// <summary>Lower case without marks: "Çakır" -> "cakir", "İSTANBUL" -> "istanbul".</summary>
+            public static string Fold(string s)
+            {
+                var sb = new StringBuilder(s.Length);
+                foreach (char c in s.Normalize(NormalizationForm.FormD))
+                    if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark) sb.Append(c == 'ı' ? 'i' : char.ToLowerInvariant(c));
+                return sb.ToString();
+            }
+
+            void Refilter()
+            {
+                var words = Fold(Field.Text).Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                // Item 0 of the box: "(tümü)" (Multi: the text of the choice); the list shows the real "(tümü)" row.
+                var rows = Items.Cast<object>().Skip(1);
+                var hits = (words.Length == 0 ? new object[] { Choice.All }.Concat(rows) : rows.Where(o => { string t = Fold(o.ToString()); return words.All(t.Contains); })).ToArray();
+                Matches.BeginUpdate();
+                Matches.Items.Clear();
+                if (hits.Length > 0) Matches.Items.AddRange(hits); else Matches.Items.Add("(eşleşen yok)");
+                if (Multi) SyncChecks(-1);
+                Matches.SelectedIndex = hits.Length == 0 ? -1 : words.Length == 0 ? Math.Max(0, SelectedIndex) : 0;
+                Matches.EndUpdate();
+            }
+
+            /// <summary>A key in the search field (also a test hook).</summary>
+            public void FieldKey(Keys k)
+            {
+                int n = Matches.Items.Count, page = Math.Max(1, Matches.ClientSize.Height / Math.Max(1, Matches.ItemHeight) - 1);
+                if (k == Keys.Escape) { popup.Close(); Focus(); }
+                else if (k == Keys.Enter && Multi)
+                {
+                    var clb = (CheckedListBox)Matches; // turn the row on or off (OnItemCheck); the list stays open
+                    if (clb.SelectedIndex >= 0) clb.SetItemChecked(clb.SelectedIndex, !clb.GetItemChecked(clb.SelectedIndex));
+                }
+                else if (k == Keys.Enter) { if (Matches.SelectedItem != null) Take(Matches.SelectedItem); }
+                else if (Matches.SelectedIndex >= 0)
+                    Matches.SelectedIndex = Math.Max(0, Math.Min(n - 1, Matches.SelectedIndex + (k == Keys.Down ? 1 : k == Keys.Up ? -1 : k == Keys.PageDown ? page : -page)));
+            }
+
+            void Take(object item)
+            {
+                int i = Items.IndexOf(item);
+                if (i < 0) return; // "(eşleşen yok)"
+                popup.Close();
+                SelectedIndex = i; // SelectedIndexChanged: the filter changed
+                Focus();
+            }
+
+            /// <summary>Open the list with the search field (text: the first letters).</summary>
+            public void ShowPopup(string text)
+            {
+                if (!Enabled || PopupOpen) return;
+                Field.Font = Matches.Font = Font;
+                Field.AccessibleName = AccessibleName + ": ara"; Matches.AccessibleName = AccessibleName;
+                // ListBox.ItemHeight is a fixed 13 px before its window exists: the row height comes from the font.
+                // CheckedListBox rows are Font.Height + 2 (the last row was cut in the 2.19 layout test, 10-23).
+                int pad = Math.Max(2, Font.Height / 5), rows = Math.Min(MaxDropDownItems, Math.Max(3, Items.Count)),
+                    rowH = Math.Max(TextRenderer.MeasureText("Ag", Font).Height + 1, Multi ? Matches.ItemHeight : 0);
+                body.Padding = new Padding(pad); gap.Height = pad;
+                Field.Text = text; Refilter();
+                body.Size = host.Size = new Size(Math.Max(Width, DropDownWidth + (Multi ? rowH + pad : 0)), Field.PreferredHeight + pad * 3 + rows * rowH); // Multi: + check box
+                popup.Show(this, new Point(0, Height));
+                PopupOpen = true; // after Show: a Show that fails does not block Fill
+                if (Environment.OSVersion.Platform == PlatformID.Win32NT) SendMessage(Field.Handle, 0x1501, (IntPtr)1, "Aramak için yazın"); // EM_SETCUEBANNER
+                Field.Focus(); Field.SelectionStart = Field.TextLength;
+            }
+
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, string l);
+
+            protected override void WndProc(ref Message m)
+            {
+                // A click opens the search list, not the native list. A click that closed the open list (outside click on
+                // this box) does not open it again.
+                if ((m.Msg == 0x201 || m.Msg == 0x203) && Enabled) // WM_LBUTTONDOWN, WM_LBUTTONDBLCLK
+                {
+                    if (unchecked(Environment.TickCount - closedAt) > 300) { Focus(); ShowPopup(""); }
+                    return;
+                }
+                if (m.Msg == 0x20A && Multi) return; // WM_MOUSEWHEEL: it would show one folder in the box, not choose it
+                base.WndProc(ref m);
+            }
+
+            protected override void OnKeyDown(KeyEventArgs e)
+            {
+                // Multi: the keys that move the selection of a closed list open it (item 0 is the choice, not a folder).
+                bool move = Multi && (e.KeyCode == Keys.Up || e.KeyCode == Keys.Down || e.KeyCode == Keys.PageUp || e.KeyCode == Keys.PageDown ||
+                                      e.KeyCode == Keys.Home || e.KeyCode == Keys.End);
+                if (e.KeyCode == Keys.F4 && !e.Alt || (e.KeyCode == Keys.Down || e.KeyCode == Keys.Up) && e.Alt || move) { ShowPopup(""); e.Handled = e.SuppressKeyPress = true; return; }
+                base.OnKeyDown(e);
+            }
+
+            protected override void OnKeyPress(KeyPressEventArgs e)
+            {
+                if (!char.IsControl(e.KeyChar)) { ShowPopup(e.KeyChar.ToString()); e.Handled = true; return; }
+                base.OnKeyPress(e);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing) popup.Dispose();
+                base.Dispose(disposing);
+            }
+        }
+
         /// <summary>Fill a filter list (sorted by the Turkish alphabet after "(tümü)") and keep the chosen value by its key; a
         /// value that is gone gives "(tümü)". An open list is not changed (the user is choosing).</summary>
         void Fill(ComboBox box, IEnumerable<Choice> values)
         {
-            if (box.DroppedDown) return;
+            var sl = box as SearchList;
+            if (box.DroppedDown || sl != null && sl.PopupOpen) return;
             string keep = KeyOf(box);
             var all = values.OrderBy(c => c.Text, StringComparer.Create(TR, true)).ToList();
             fillingFilters = true;
             box.BeginUpdate();
             box.Items.Clear(); box.Items.Add(Choice.All);
             box.Items.AddRange(all.ToArray());
-            int i = keep == null ? -1 : all.FindIndex(c => c.Key == keep);
-            box.SelectedIndex = i + 1;
+            if (sl != null && sl.Multi) { sl.Checked.IntersectWith(all.Select(c => c.Key)); sl.ShowChecked(); } // the folders that are still there
+            else box.SelectedIndex = (keep == null ? -1 : all.FindIndex(c => c.Key == keep)) + 1;
             box.EndUpdate();
             fillingFilters = false;
             int w = all.Select(c => TextRenderer.MeasureText(c.Text, box.Font).Width).DefaultIfEmpty(0).Max() + SystemInformation.VerticalScrollBarWidth + S(8);
@@ -860,8 +1089,8 @@ namespace HatirMail
             Fill(recipientBox, rows("recipients").Select(r => new Choice { Key = (string)r[0], Text = r[1] as string ?? "" }));
         }
 
-        /// <summary>Folder filter = one of the folders checked on the İndeks tab (each folder is one line there, so its subfolders
-        /// are not included). Rebuilt only when the checked folders change.</summary>
+        /// <summary>Folder filter = one or more of the folders checked on the İndeks tab (each folder is one line there, so its
+        /// subfolders are not included). Rebuilt only when the checked folders change.</summary>
         void RefreshFolderFilter()
         {
             var sel = SelectedFolders();
@@ -869,21 +1098,21 @@ namespace HatirMail
             if (!now.SetEquals(sel.Select(f => f.Id))) Fill(folderBox, sel.Select(f => new Choice { Key = f.Id, Text = f.Path.TrimStart('\\') }));
         }
 
-        /// <summary>The scope and the filters of a search: the folder filter narrows the checked folders; the sender and
-        /// recipient keys, the date range and the attachment filter go to the worker (begin.filters). note: the active
-        /// filters for the status text ("" = none).</summary>
+        /// <summary>The scope and the filters of a search: the folder filter narrows the checked folders to the chosen ones;
+        /// the sender and recipient keys, the date range and the attachment filter go to the worker (begin.filters). note:
+        /// the active filters for the status text ("" = none).</summary>
         public List<FolderInfo> FilteredScope(List<FolderInfo> sel, out Dictionary<string, object> filters, out string note)
         {
-            string fid = KeyOf(folderBox);
-            if (fid != null) sel = sel.Where(f => f.Id == fid).ToList();
+            if (folderBox.Checked.Count > 0) sel = sel.Where(f => folderBox.Checked.Contains(f.Id)).ToList();
             filters = new Dictionary<string, object> { {"sender", KeyOf(senderBox)}, {"recipient", KeyOf(recipientBox)}, {"attach", KeyOf(attFilterBox)} };
             DateTime? from, to;
             string dates = DateRange(out from, out to);
             if (from != null) filters["date_from"] = from.Value.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
             if (to != null) filters["date_to"] = to.Value.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
             var parts = new List<string>();
-            foreach (var b in new[] { Tuple.Create("gönderen", senderBox), Tuple.Create("alıcı", recipientBox), Tuple.Create("klasör", folderBox) })
+            foreach (var b in new[] { Tuple.Create("gönderen", senderBox), Tuple.Create("alıcı", recipientBox) })
                 if (KeyOf(b.Item2) != null) parts.Add(b.Item1 + " " + b.Item2.Text);
+            if (folderBox.Checked.Count > 0) parts.Add("klasör " + string.Join(", ", folderBox.CheckedTexts()));
             if (dates != null) parts.Add("tarih " + dates);
             if (KeyOf(attFilterBox) != null) parts.Add("ek " + attFilterBox.Text);
             note = parts.Count == 0 ? "" : " Filtre: " + string.Join(", ", parts) + ".";
@@ -917,12 +1146,27 @@ namespace HatirMail
 
         ComboBox[] AllFilterBoxes { get { return new[] { senderBox, recipientBox, folderBox, dateBox, attFilterBox }; } }
 
-        /// <summary>A filter changed (by the user or by a refill): the date pickers show only for "Özel aralık…", the
+        /// <summary>Preview height: the user's height (previewWant) when the result list has room for its header and 3
+        /// rows; else smaller, but not below 100 px (96 DPI) or the user's height.</summary>
+        void FitPreview()
+        {
+            fitQueued = false;
+            if (IsDisposed) return;
+            int need = 4 * (TextRenderer.MeasureText("Ag", list.Font).Height + S(6)); // header + 3 rows
+            int h = Math.Max(Math.Min(previewWant, S(100)), Math.Min(previewWant, previewBox.Height + list.Height - need));
+            if (h != previewBox.Height) previewBox.Height = h;
+        }
+
+        /// <summary>A filter changed (by the user or by a refill): the date row shows only for "Özel aralık…", the
         /// clear button only with a filter. The search does not start again by itself.</summary>
         void FilterChanged()
         {
-            dateFrom.Visible = dateTo.Visible = dateDash.Visible = KeyOf(dateBox) == "custom";
-            clearFiltersBtn.Enabled = AllFilterBoxes.Any(b => b.SelectedIndex > 0);
+            bool range = KeyOf(dateBox) == "custom";
+            int rowH = (int)filterTable.RowStyles[0].Height;
+            foreach (var c in rangeRow) c.Visible = range;
+            filterTable.RowStyles[2].Height = range ? rowH : 0;
+            filterTable.Height = filterTable.Padding.Vertical + (range ? 3 : 2) * rowH;
+            clearFiltersBtn.Enabled = AllFilterBoxes.Any(b => b.SelectedIndex > 0) || folderBox.Checked.Count > 0;
             if (!fillingFilters && session == null) SetStatus("Filtre değişti. Uygulamak için Ara'ya basın.");
         }
 
@@ -930,6 +1174,7 @@ namespace HatirMail
         {
             fillingFilters = true;
             foreach (var b in AllFilterBoxes) b.SelectedIndex = 0;
+            folderBox.SetChecked(new string[0]);
             fillingFilters = false;
             FilterChanged();
             senderBox.Focus();

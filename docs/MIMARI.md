@@ -155,6 +155,14 @@ Outlook.exe (Klasik)
     kutusu, iki gün dahil) verir; eklenti bunu yerel saatle `[date_from, date_to)` olarak gönderir. Bu kesin bir
     süzgeçtir; sorgudaki tarih sözcükleri ise yalnız sıralamayı etkiler. Ek filtresi `items.attachments` içindeki ek
     adlarına bakar (ekli, eksiz ya da dosya türü). Metne gömülü küçük resimler bu listede yoktur.
+  - **Yerleşim ve liste araması (22 Ekim):** bütün filtre alanları tek bir tablodadır: üç eşit sütun, sabit genişlikte
+    etiket sütunları. Özel aralığın tarihleri üçüncü satırda, üstteki listelerle aynı hizadadır. Gönderen, Alıcı ve
+    Klasör listeleri `SearchList` ile açılır: üstte arama alanı, altta süzülen satırlar (sözcüklerin hepsi, harf ve
+    Türkçe işaret farkı yok). Açılır pencere `ToolStripDropDown`'dır. Outlook'un ileti döngüsünde WinForms bu pencere
+    açıkken tuşları kendi kancasıyla görür ve dışarı tıklanınca pencereyi kapatır.
+  - **Birden çok klasör (23 Ekim):** Klasör listesi onay kutuludur (`SearchList(multi)`, `CheckedListBox`). Seçilen
+    klasörler aramanın kapsamıdır (eklenti kapsamı daraltır; worker'a giden protokol değişmedi). İndeks sekmesinde
+    işareti kalkan klasör filtreden de çıkar.
 - **Sonuç listesi (22 Ekim):** sütun başlığına tıklamak listeyi o sütuna göre sıralar, ikinci tıklama sırayı çevirir.
   Güven sütunu worker'ın sırasıdır (`rank`). Seçilen sıralama yeni sonuçlarda da kalır. Sağ tık menüsü: Outlook'ta aç, Eki
   aç, Konuyu kopyala, Yalnız bu gönderenle yeniden ara (sonuçtaki `sender_key` ile Gönderen filtresi). Bu komut son

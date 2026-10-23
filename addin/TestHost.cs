@@ -427,7 +427,7 @@ namespace HatirMail
                 form.Feed("index", new Dictionary<string, object> { {"ev", "progress"}, {"phase", "embed"}, {"done", 1234}, {"total", 4321}, {"rate", 0.6}, {"eta_s", 5148} });
                 form.Feed("search", Results());
                 form.Feed("status", Facets(false)); // filter lists with long names (layout)
-                // Second filter row at its widest: "Özel aralık…" shows the two date pickers (cleared after the screenshots).
+                // All filter rows: "Özel aralık…" shows the third row with the two date fields (cleared after the screenshots).
                 form.FilterBoxes[3].SelectedIndex = form.FilterBoxes[3].Items.Count - 1; form.FilterBoxes[4].SelectedIndex = 3;
                 form.SetQuery("geçen ay Ahmet'ten gelen kargo faturası");
                 // The window is limited to this 1024x768 screen; its root panel is not (a child window): lay it out at
@@ -442,6 +442,7 @@ namespace HatirMail
                         form.ShowTab(tab); root.PerformLayout(); Application.DoEvents();
                         string name = (size == form.DesignClientSize ? "default" : "min") + "-" + new[] { "ara", "indeks", "ayarlar" }[tab];
                         ok &= Check(root, name);
+                        if (tab == 0) ok &= FilterGrid(form, name);
                         if (shotDir != null) Shot(root, Path.Combine(shotDir, "ui-" + name + ".png"));
                     }
                 }
@@ -465,6 +466,7 @@ namespace HatirMail
                 ok &= form.PreviewMarkedChars > 0;
                 ok &= FilterUiCheck(form);
                 ok &= SortUiCheck(form);
+                ok &= SearchListCheck(form, shotDir);
                 ok &= HistoryUiCheck(form, settings, shotDir);
                 ok &= IndexDeleteCheck(form, settings); // it clears the results
                 ok &= ExcludeUiCheck(form, settings, src.Stores()[0].Key, shotDir);
@@ -769,18 +771,26 @@ namespace HatirMail
                            texts(b[2]).Length == form.ListedFolderIds().Count + 1);
             b[0].SelectedIndex = 3; b[1].SelectedIndex = 1;
             bool changed = form.StatusText.StartsWith("Filtre değişti");
-            b[2].SelectedIndex = texts(b[2]).ToList().IndexOf("Gelen Kutusu\\Projeler");
+            var fb = (SearchForm.SearchList)b[2];
+            fb.SetChecked(new[] { "F-PROJ" });
+            bool one = fb.Text == "Gelen Kutusu\\Projeler" && form.ClearFiltersEnabled;
             form.Feed("status", Facets(true)); // the lists come again: Zeynep stays, Furkan Çakır is gone
             Dictionary<string, object> f; string note;
             var scope = form.FilteredScope(form.AllFolders, out f, out note);
-            check("kept", changed && b[0].Text == "Zeynep Arslan <zeynep@x.example>" && b[1].SelectedIndex == 0 &&
+            check("kept", changed && one && b[0].Text == "Zeynep Arslan <zeynep@x.example>" && b[1].SelectedIndex == 0 &&
                           (string)f["sender"] == "zeynep@x.example" && f["recipient"] == null && scope.Count == 1 && scope[0].Id == "F-PROJ" &&
                           note == " Filtre: gönderen Zeynep Arslan <zeynep@x.example>, klasör Gelen Kutusu\\Projeler.");
-            form.SetFolderChecked("F-PROJ", false); // not in the scope any more: the folder filter is gone
-            bool gone = b[2].SelectedIndex == 0 && !texts(b[2]).Contains("Gelen Kutusu\\Projeler");
+            // More than one folder: the scope is these folders; the box shows the count, the status note the names.
+            fb.SetChecked(new[] { "F-PROJ", "F-ARCH" });
+            scope = form.FilteredScope(form.AllFolders, out f, out note);
+            check("folders_multi", fb.Text == "2 klasör seçili" && scope.Select(x => x.Id).OrderBy(x => x).SequenceEqual(new[] { "F-ARCH", "F-PROJ" }) &&
+                                   note.Contains("klasör Arşiv, Gelen Kutusu\\Projeler."));
+            form.SetFolderChecked("F-PROJ", false); // not in the scope any more: that folder leaves the filter, Arşiv stays
+            bool gone = !texts(b[2]).Contains("Gelen Kutusu\\Projeler") && fb.Checked.SetEquals(new[] { "F-ARCH" }) && fb.Text == "Arşiv";
             form.SetFolderChecked("F-PROJ", true);
-            check("folder_unchecked", gone && texts(b[2]).Contains("Gelen Kutusu\\Projeler") && b[2].SelectedIndex == 0);
+            check("folder_unchecked", gone && texts(b[2]).Contains("Gelen Kutusu\\Projeler") && fb.Checked.SetEquals(new[] { "F-ARCH" }));
             foreach (var x in b) x.SelectedIndex = 0;
+            fb.SetChecked(new string[0]);
             form.FilteredScope(form.AllFolders, out f, out note);
             check("none", note == "" && f["sender"] == null && f["recipient"] == null && f["attach"] == null && !f.ContainsKey("date_from") &&
                           !form.ClearFiltersEnabled);
@@ -798,10 +808,108 @@ namespace HatirMail
             form.FilteredScope(form.AllFolders, out f, out note);
             check("date_custom", form.DatePickers.All(p => p.Visible) && (string)f["date_from"] == "2026-09-01T00:00:00" &&
                                  (string)f["date_to"] == "2026-10-01T00:00:00" && note.Contains("tarih 01.09.2026–30.09.2026"));
-            b[0].SelectedIndex = 1;
+            b[0].SelectedIndex = 1; fb.SetChecked(new[] { "F-ARCH" });
             form.ClickClearFilters();
             form.FilteredScope(form.AllFolders, out f, out note);
-            check("clear", b.All(x => x.SelectedIndex == 0) && note == "" && !form.ClearFiltersEnabled && !form.DatePickers[0].Visible);
+            check("clear", b.All(x => x.SelectedIndex == 0) && fb.Checked.Count == 0 && fb.Text == "(tümü)" && note == "" && !form.ClearFiltersEnabled &&
+                           !form.DatePickers[0].Visible);
+            return ok;
+        }
+
+        // Filter fields (Windows only): the same width in each column, the same left edge in each column, the same top and
+        // height in each row. The date fields of the third row line up with the lists above them.
+        static bool FilterGrid(SearchForm form, string name)
+        {
+            var b = form.FilterBoxes;
+            var d = form.DatePickers;
+            var cols = new[] { new Control[] { b[0], b[3], d[0] }, new Control[] { b[1], b[4], d[1] } };
+            var rows = new[] { new Control[] { b[0], b[1], b[2] }, new Control[] { b[3], b[4] }, new Control[] { d[0], d[1] } };
+            Func<Control, Rectangle> at = c => form.Root.RectangleToClient(c.RectangleToScreen(new Rectangle(Point.Empty, c.Size)));
+            bool ok = cols.All(c => c.Where(x => x.Visible).Select(x => at(x).Left).Distinct().Count() == 1 && c.Where(x => x.Visible).Select(x => x.Width).Distinct().Count() == 1) &&
+                      new[] { b[0], b[1], b[2] }.Select(x => x.Width).Max() - new[] { b[0], b[1], b[2] }.Select(x => x.Width).Min() <= 2 &&
+                      rows.All(r => r.Where(x => x.Visible).Select(x => at(x).Top).Distinct().Count() <= 1) &&
+                      b.All(x => x.Height == b[0].Height) && d.All(x => x.Visible);
+            // With all filter rows, the result list still shows its 3 results (the preview gives way in a small window).
+            var lv = SearchForm.AllControls(form.Root).OfType<ListView>().First(x => x.AccessibleName == "Sonuçlar");
+            bool rows3 = lv.Items.Count >= 3 && lv.GetItemRect(2).Bottom <= lv.ClientSize.Height;
+            ok &= rows3;
+            Console.WriteLine("filter_grid {0} widths={1} lefts={2} tops={3} list_shows_3_rows={4} -> {5}", name, string.Join("/", b.Concat<Control>(d).Select(x => x.Width)),
+                              string.Join("/", b.Concat<Control>(d).Select(x => at(x).Left)), string.Join("/", b.Concat<Control>(d).Select(x => at(x).Top)), rows3, ok ? "ok" : "FAIL");
+            return ok;
+        }
+
+        // Search field in the Gönderen list (Windows only): the drop-down opens with the field; words filter without case
+        // and Turkish marks; arrows move; Enter takes the item (the Gönderen filter changes, the list closes); Esc closes
+        // and keeps the value; a letter on the closed list opens it with that letter; no match gives a note that is not a
+        // choice. The start state comes back.
+        static bool SearchListCheck(SearchForm form, string shotDir)
+        {
+            bool ok = true;
+            Action<string, bool> check = (name, pass) => { Console.WriteLine("search_list_" + name + "=" + (pass ? "ok" : "FAIL")); ok &= pass; };
+            form.Feed("status", Facets(false));
+            var box = (SearchForm.SearchList)form.FilterBoxes[0];
+            Func<string[]> shown = () => box.Matches.Items.Cast<object>().Select(o => o.ToString()).ToArray();
+            box.ShowPopup("");
+            Application.DoEvents();
+            // No focus check: the SSH session on 2.19 is not interactive (a window there does not take the focus).
+            check("open", box.PopupOpen && box.PopupVisible && shown().Length == 4 && shown()[0] == "(tümü)" && box.Matches.SelectedIndex == 0 &&
+                          box.PopupBody.Width >= box.Width && box.PopupBody.Height >= box.Field.Height + 3 * box.Matches.ItemHeight);
+            box.Field.Text = "cagla";
+            check("fold", shown().SequenceEqual(new[] { "Çağla Öztürk <cagla@x.example>" }) && box.Matches.SelectedIndex == 0);
+            box.Field.Text = "ÖZTÜRK x.example";
+            check("words", shown().SequenceEqual(new[] { "Çağla Öztürk <cagla@x.example>" }));
+            box.Field.Text = "example";
+            box.FieldKey(Keys.Down);
+            if (shotDir != null) Shot(box.PopupBody, Path.Combine(shotDir, "ui-search-list.png"));
+            bool moved = box.Matches.SelectedItem?.ToString() == "Çağla Öztürk <cagla@x.example>";
+            box.FieldKey(Keys.Enter);
+            Application.DoEvents();
+            check("enter", moved && !box.PopupOpen && !box.PopupVisible && box.Text == "Çağla Öztürk <cagla@x.example>" &&
+                           form.StatusText.StartsWith("Filtre değişti") && form.ClearFiltersEnabled);
+            box.ShowPopup("zzz");
+            bool none = shown().SequenceEqual(new[] { "(eşleşen yok)" }) && box.Matches.SelectedIndex == -1;
+            box.FieldKey(Keys.Enter);
+            bool stays = box.PopupOpen && box.Text == "Çağla Öztürk <cagla@x.example>";
+            box.FieldKey(Keys.Escape);
+            Application.DoEvents();
+            check("no_match_and_esc", none && stays && !box.PopupOpen && box.Text == "Çağla Öztürk <cagla@x.example>");
+            // A letter on the closed list (the protected OnKeyPress, as the key message calls it).
+            var kp = typeof(Control).GetMethod("OnKeyPress", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            kp.Invoke(box, new object[] { new KeyPressEventArgs('y') }); // only "Zeynep" has a "y"
+            Application.DoEvents();
+            check("type_to_open", box.PopupOpen && box.Field.Text == "y" && shown().SequenceEqual(new[] { "Zeynep Arslan <zeynep@x.example>" }) &&
+                                  box.Text == "Çağla Öztürk <cagla@x.example>");
+            box.FieldKey(Keys.Escape);
+            form.ClickClearFilters();
+            check("clear", box.SelectedIndex == 0 && !box.PopupOpen && !form.ClearFiltersEnabled);
+            // Klasör: check boxes. A click or Enter turns a row on or off and the list stays open; "(tümü)" is on only
+            // while no row is on; turning it on clears the rows. The filter applies at the next Ara (Filtre değişti).
+            var fb = (SearchForm.SearchList)form.FilterBoxes[2];
+            var clb = (CheckedListBox)fb.Matches;
+            Func<string> on = () => string.Join("|", clb.CheckedItems.Cast<object>().Select(o => o.ToString()));
+            fb.ShowPopup("");
+            Application.DoEvents();
+            bool start = fb.PopupOpen && on() == "(tümü)" && clb.Items.Count == form.ListedFolderIds().Count + 1;
+            fb.Field.Text = "arsiv";
+            fb.FieldKey(Keys.Enter);
+            fb.Field.Text = "projeler";
+            fb.FieldKey(Keys.Enter);
+            fb.Field.Text = "";
+            if (shotDir != null) Shot(fb.PopupBody, Path.Combine(shotDir, "ui-folder-list.png"));
+            check("folders_check", start && fb.PopupOpen && on() == "Arşiv|Gelen Kutusu\\Projeler" && fb.Text == "2 klasör seçili" &&
+                                   fb.Checked.SetEquals(new[] { "F-ARCH", "F-PROJ" }) && form.StatusText.StartsWith("Filtre değişti") && form.ClearFiltersEnabled);
+            fb.Field.Text = "arsiv";
+            fb.FieldKey(Keys.Enter); // off again
+            fb.Field.Text = "";
+            bool offOne = on() == "Gelen Kutusu\\Projeler" && fb.Text == "Gelen Kutusu\\Projeler";
+            clb.SelectedIndex = 0;
+            fb.FieldKey(Keys.Enter); // "(tümü)": every row off
+            check("folders_all", offOne && on() == "(tümü)" && fb.Checked.Count == 0 && fb.Text == "(tümü)" && fb.PopupOpen);
+            fb.FieldKey(Keys.Enter); // "(tümü)" alone does not turn off
+            bool stay = on() == "(tümü)";
+            fb.FieldKey(Keys.Escape);
+            Application.DoEvents();
+            check("folders_close", stay && !fb.PopupOpen && !form.ClearFiltersEnabled);
             return ok;
         }
 
