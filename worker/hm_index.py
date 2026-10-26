@@ -1,4 +1,6 @@
 """Indexing: mail dict -> stored record, FTS text, chunk texts; attachment text; embedding of pending chunks."""
+import collections
+import concurrent.futures
 import hashlib
 import re
 import time
@@ -155,16 +157,30 @@ def item_chunk_texts(store, rowid, subject, sender, atts, main):
 
 
 def embed_pending(store, get_encoder, folder_ids, model_rev, batch=8, window=64, stop=lambda: False,
-                  progress=lambda done, total, rate: None, since=None):
+                  progress=lambda done, total, rate: None, since=None, runs=1):
     """Embed the chunks of not-yet-embedded items in the scope, newest first. since: only the delta ("Güncelle").
 
-    Vectors are saved after every model batch (a killed process loses one batch). An item is marked embedded when
-    every chunk has a vector, also after stop(). Chunks with a known text hash reuse the stored vector (moved, re-read
-    or re-saved mails cost nothing); only the model work waits for the next run.
+    Vectors are saved after every model batch (a killed process loses the running batches). An item is marked embedded
+    when every chunk has a vector, also after stop(). Chunks with a known text hash reuse the stored vector (moved,
+    re-read or re-saved mails cost nothing); only the model work waits for the next run.
     progress(done, total, rate) counts model work only: chunks embedded / distinct chunks without a vector;
     rate = chunks per second since the first batch (the model load is not counted). Returns a stats dict.
     get_encoder() loads the model only if there is work.
+    runs: model batches at the same time (threads; ONNX Runtime releases the GIL). The batches are the same as with
+    runs=1, so every vector is bit-identical (a vector depends on the other texts of its batch through the padding).
+    The tokens are made and the vectors saved in this thread, in batch order. stop() is checked before each new
+    batch; the running batches finish and are saved. 10-26, 2.19 (16 cores): 2 runs x 8 threads 2.27 chunks/s vs
+    1 x 16 2.09 (other vector bits) and 1 x 4 1.34; peak commit 3.4 GB vs 2.3 GB.
     """
+    pool = concurrent.futures.ThreadPoolExecutor(runs) if runs > 1 else None
+    try:
+        return _embed(store, get_encoder, folder_ids, model_rev, batch, window, stop, progress, since, pool, runs)
+    finally:
+        if pool:
+            pool.shutdown(wait=True)  # an exception: the running batches end before the store closes
+
+
+def _embed(store, get_encoder, folder_ids, model_rev, batch, window, stop, progress, since, pool, runs):
     items = store.pending(folder_ids, since)
     todo = [(rowid, item_chunk_texts(store, rowid, subject, sender, atts, main))
             for rowid, subject, sender, atts, main in items]
@@ -186,12 +202,21 @@ def embed_pending(store, get_encoder, folder_ids, model_rev, batch=8, window=64,
             enc = get_encoder()
             t_enc = t_enc or time.perf_counter()
             pairs = sorted(need.items(), key=lambda kv: len(kv[1]))  # similar lengths: less padding
-            for b in range(0, len(pairs), batch):
-                if stop():  # also right after the model load
-                    stopped = True
+            parts = [pairs[b:b + batch] for b in range(0, len(pairs), batch)]
+            running = collections.deque()  # (part, result or future), in batch order
+            while parts or running:
+                while parts and len(running) < runs:
+                    if stop():  # also right after the model load
+                        stopped = True
+                        parts.clear()
+                        break
+                    part = parts.pop(0)
+                    prepared = enc.prepare([t for _, t in part])
+                    running.append((part, pool.submit(enc.run, prepared) if pool else enc.run(prepared)))
+                if not running:
                     break
-                part = pairs[b:b + batch]
-                vecs = enc.encode([t for _, t in part])
+                part, vecs = running.popleft()
+                vecs = vecs.result() if pool else vecs
                 with store.tx():
                     store.put_vectors(list(zip([h for h, _ in part], vecs)), model_rev)
                 known.update(h for h, _ in part)

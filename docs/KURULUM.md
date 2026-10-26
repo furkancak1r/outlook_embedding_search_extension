@@ -141,6 +141,10 @@ Büyük bir posta kutusunda tam indeksleme saatler sürebilir. 2.19 test makines
 bin postalık gerçek bir PST'nin ilk indeksi 2 saatten uzun sürdü. Bu süre bir kez harcanır; sonraki çalışmalar yalnız yeni ve
 değişen postaları işler.
 
+Anlam indekslemeyi hızlandırmak için Ayarlar sekmesinde **İşlemci çekirdeği** değerini artırın. 2.19 ölçümü (saniyede
+işlenen parça): 4 çekirdek 1,3; 8 çekirdek 1,7; 16 çekirdek 2,3. Sonuçlar her değerde aynıdır. Daha çok çekirdek,
+indeksleme sürerken Outlook'u ve bilgisayarı yavaşlatabilir.
+
 ### İndeksi güncel tutma: Güncelle
 
 Tam indekslemeden sonra İndeks sekmesinde **Güncelle**'ye basın (kısayol: Alt+G). HatırMail yalnız son indekslemeden sonra
@@ -300,8 +304,8 @@ varsayılana döndürür (kaydetmek için yine **Kaydet**'e basın).
 
 | Sekmedeki ad | `settings.json` | Varsayılan | Aralık | Anlamı |
 |---|---|---|---|---|
-| İşlemci çekirdeği | `threads` | 4 | 1–16 | Modelin kullanacağı en çok CPU çekirdeği. Çok çekirdek indekslemeyi hızlandırır ama Outlook'u yavaşlatabilir |
-| Bellek sınırı (MB) | `memory_limit_mb` | 4096 | 2048–32768 | Arama işleminin bellek sınırı (Windows Job Object). Modelle indeksleme en çok yaklaşık 1.300 MB kullanır (2.19 ölçümü) |
+| İşlemci çekirdeği | `threads` | 4 | 1–16 | Modelin kullanacağı en çok CPU çekirdeği. Çok çekirdek indekslemeyi hızlandırır ama Outlook'u yavaşlatabilir. 16 seçilirse ve bilgisayarda en az 16 çekirdek varsa, anlam indeksleme iki işi aynı anda 8'er çekirdekle yapar (bellek sınırı en az 4096 MB olmalı). Sonuçlar aynıdır |
+| Bellek sınırı (MB) | `memory_limit_mb` | 4096 | 2048–32768 | Arama işleminin bellek sınırı (Windows Job Object). 2.19 ölçümü: modelle indeksleme 4 çekirdekte en çok ~2.350 MB, 16 çekirdekte (iki iş) en çok ~3.400 MB |
 | Aramada indeksleme (sn) | `search_index_budget_s` | 20 | 0–600 | Ara'ya basınca yeni postaları indekslemek için en çok bu kadar beklenir. 0: aramada indeksleme yok |
 | Yapay zekâyı hazır tut (dk) | `keep_alive_min` | 10 | 0–120 | Pencere açıkken model son işten sonra bu kadar dakika bellekte kalır; aramalar modeli beklemez. Pencere kapanınca model de kapanır. 0: her aramada model yeniden yüklenir ve iş bitince bellek boşalır |
 | Ek dosyalarının içinde de ara | `attachments` | true | – | Eklerin içeriğini oku ve ara. Kapalıysa yalnız ek adları aranır |

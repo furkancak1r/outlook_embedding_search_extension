@@ -2029,7 +2029,7 @@ namespace HatirMail
             var psi = new ProcessStartInfo(settings.Python)
             {
                 Arguments = "-I -B -X utf8 \"" + settings.Worker + "\" --data \"" + settings.Data + "\" --model \"" +
-                            settings.Model + "\" --threads " + Threads,
+                            settings.Model + "\" --threads " + Threads + " --memory-mb " + MemoryLimitMb,
                 UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true,
                 RedirectStandardOutput = true, RedirectStandardError = true,
                 StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false),

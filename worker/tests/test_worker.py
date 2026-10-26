@@ -442,6 +442,88 @@ class StoreSearchTests(unittest.TestCase):
         self.assertFalse(st["stopped"])
         self.assertEqual(self.store.db.execute("SELECT count(*) FROM items WHERE embedded=0").fetchone()[0], 0)
 
+    def test_parallel_embedding_same_vectors(self):
+        """runs=2: the same batches as runs=1, so the same vectors and stats; two model runs overlap; the vectors are
+        saved in batch order by this thread; a stop before a new batch lets the running batches finish and be saved;
+        the next run (runs=2) completes the index with the same vectors."""
+        import hm_worker
+        with self.store.tx():
+            for i in range(30):  # 30 mails, several chunks each: more than one window of 64 chunks
+                hm_index.ingest(self.store, mail("W%d" % i, "Konu %d" % i, ("Paragraf %d metni. " % i) * (40 + 13 * i)),
+                                2, REV)
+        path = self.store.path
+
+        class Slow(type(self.enc)):
+            """The fake encoder with a model run that takes time and records overlap and the save thread."""
+            lock, active, peak, threads = threading.Lock(), 0, 0, set()
+
+            def run(self, prepared):
+                with Slow.lock:
+                    Slow.active += 1
+                    Slow.peak = max(Slow.peak, Slow.active)
+                    Slow.threads.add(threading.get_ident())
+                time.sleep(0.01)
+                try:
+                    return super().run(prepared)
+                finally:
+                    with Slow.lock:
+                        Slow.active -= 1
+
+        def copy(name):
+            import shutil
+            dst = os.path.join(self.tmp.name, name)
+            self.store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            shutil.copy(path, dst)
+            return Store(dst, REV)
+
+        a, b = copy("a.sqlite"), copy("b.sqlite")
+        saved, order_a, order_b = [], [], []
+        a.put_vectors = lambda rows, rev, f=a.put_vectors: (order_a.append([h for h, _ in rows]), f(rows, rev))[1]
+        b.put_vectors = lambda rows, rev, f=b.put_vectors: (saved.append(threading.get_ident()),
+                                                            order_b.append([h for h, _ in rows]), f(rows, rev))[2]
+        sa = hm_index.embed_pending(a, lambda: self.enc, ["F1"], REV)
+        sb = hm_index.embed_pending(b, Slow, ["F1"], REV, runs=2)
+        self.assertEqual(order_b, order_a)  # the same batches, saved in the same order (a killed process: same state)
+        self.assertGreater(sa["model_chunks"], 64)
+        for k in ("items", "chunks", "model_chunks", "embedded_chunks", "reused_chunks", "stopped"):
+            self.assertEqual(sa[k], sb[k], k)
+        vec = lambda s: dict(s.db.execute("SELECT text_hash, vec FROM vectors"))
+        self.assertEqual(vec(a), vec(b))
+        self.assertEqual(Slow.peak, 2)
+        self.assertNotIn(threading.get_ident(), Slow.threads)  # the model ran in the pool
+        self.assertEqual(set(saved), {threading.get_ident()})  # SQLite stays on this thread
+        # A stop: the same check points as runs=1 (one before the model load, one before each new batch). The running
+        # batches finish and are saved; the rest waits. The next run completes the index with the same vectors.
+        def stop_after(n):
+            calls = {"n": 0}
+
+            def stop():
+                calls["n"] += 1
+                return calls["n"] > n
+            return stop
+
+        c, d, e = copy("c.sqlite"), copy("d.sqlite"), copy("e.sqlite")
+        base = len(vec(e))
+        e.close()  # Windows cannot delete an open file in tearDown
+        sc = hm_index.embed_pending(c, Slow, ["F1"], REV, stop=stop_after(4), runs=2)
+        sd = hm_index.embed_pending(d, lambda: self.enc, ["F1"], REV, stop=stop_after(4))
+        self.assertTrue(sc["stopped"] and sd["stopped"])
+        self.assertEqual(sc["embedded_chunks"], 3 * 8)
+        self.assertEqual((sc["embedded_chunks"], vec(c)), (sd["embedded_chunks"], vec(d)))
+        self.assertEqual(len(vec(c)) - base, 3 * 8)
+        sc2 = hm_index.embed_pending(c, Slow, ["F1"], REV, runs=2)
+        self.assertFalse(sc2["stopped"])
+        self.assertEqual(vec(c), vec(a))
+        d.close()
+        for s in (a, b, c):
+            self.assertEqual(s.db.execute("SELECT count(*) FROM items WHERE embedded=0").fetchone()[0], 0)
+            s.close()
+        # The rule: 2 runs only with 16 threads, a limit of 4096 MB or more and 16 or more CPUs.
+        self.assertEqual(hm_worker.embed_runs(16, 4096, 16), (2, 8))
+        for args in ((4, 4096, 16), (8, 8192, 16), (15, 8192, 16), (16, 4095, 16), (16, 8192, 12), (16, 0, 16),
+                     (16, 8192, None)):
+            self.assertEqual(hm_worker.embed_runs(*args), (1, args[0]), args)
+
     def test_filters_narrow_results(self):
         """Ara filters: only mails of the chosen sender / recipient; Turkish upper and lower case are one key; the
         confidence of a mail is the same with and without a filter (z statistics on the whole scope)."""
@@ -780,10 +862,10 @@ class AttachmentTests(unittest.TestCase):
 class ProtocolTests(unittest.TestCase):
     """Start the real worker process (fake encoder) and talk JSON lines to it."""
 
-    def start(self, data, token="s" * 32):
+    def start(self, data, token="s" * 32, args=()):
         env = dict(os.environ, HM_SESSION=token, PYTHONIOENCODING="utf-8")
         return subprocess.Popen([sys.executable, "-I", "-B", "-X", "utf8", str(WORKER / "hm_worker.py"), "--data", data,
-                                 "--model", "unused", "--fake-encoder"], stdin=subprocess.PIPE,
+                                 "--model", "unused", "--fake-encoder", *args], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True,
                                 encoding="utf-8")
 
@@ -960,6 +1042,27 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual((ev[-1]["coverage"]["att_done"], ev[-1]["coverage"]["att_total"]), (1, 1))
             embed = [e for e in ev if e["ev"] == "progress" and e["phase"] == "embed"]
             self.assertEqual((embed[-1]["done"], embed[-1]["total"], embed[-1]["eta_s"]), (3, 3, 0))  # 2 body + 1 attachment chunk
+
+    def test_memory_arg_and_embed_runs(self):
+        """The add-in passes --threads and --memory-mb: done.stats.embed.runs follows hm_worker.embed_runs for this
+        computer; without --memory-mb (an older add-in) one batch at a time, as before. The vectors are the same."""
+        import sqlite3
+        import hm_worker
+        mails = [mail("E%d" % i, "Konu %d" % i, ("Metin %d. " % i) * 300, "2026-09-%02dT09:00:00" % (i + 1)) for i in range(6)]
+        vecs = []
+        for args, want in ((("--threads", "16", "--memory-mb", "4096"), hm_worker.embed_runs(16, 4096, os.cpu_count())[0]),
+                           (("--threads", "16"), 1), (("--threads", "4", "--memory-mb", "8192"), 1)):
+            with tempfile.TemporaryDirectory() as d:
+                p = self.start(d, args=args)
+                ev, need = self.play(p, mails, "", mode="index")
+                self.close(p)
+                self.assertEqual((p.returncode, ev[-1]["status"]), (0, "ok"), args)
+                self.assertEqual(ev[-1]["stats"]["embed"]["runs"], want, args)
+                self.assertGreater(ev[-1]["stats"]["embed"]["embedded_chunks"], 8, args)
+                db = sqlite3.connect(hm_worker.db_path(d, "S1"))
+                vecs.append(dict(db.execute("SELECT text_hash, vec FROM vectors")))
+                db.close()
+        self.assertTrue(vecs[0] == vecs[1] == vecs[2])
 
     def test_search_budget_zero_and_stopped_read(self):
         """Time-limited search: no attachment reading and no embedding after the limit; mails that the add-in did

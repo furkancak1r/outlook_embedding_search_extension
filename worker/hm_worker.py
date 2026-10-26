@@ -148,13 +148,24 @@ MODES = ("search", "index", "update", "status", "similar")
 _load_lock = threading.Lock()
 
 
+def embed_runs(threads, memory_mb, cpus):
+    """(model batches at the same time, threads per batch) for the indexing. 10-26 probe on 2.19 (2 x 8 cores): more
+    batches inside the same core count give nothing (2x2 < 1x4, 2x4 = 1x8); 16 threads in one batch change the vector
+    bits, 2 batches of 8 threads keep them and are faster. Peak commit 3.4 GB (2x8) vs 2.3 GB (1x4); the Job Object
+    limit counts the commit, so 2 batches need a limit of 4096 MB or more. Else: one batch (as before)."""
+    if threads >= 16 and memory_mb >= 4096 and (cpus or 0) >= 16:
+        return 2, threads // 2
+    return 1, threads
+
+
 def load_encoder(args, enc):
     """The model loads once per process; the next sessions of a kept-alive process reuse it. The lock: a session that
     needs the model during the preload (preload thread) waits for that load and does not load a second copy."""
     with _load_lock:
         if "e" not in enc:
             import hm_embed
-            enc["e"] = (hm_embed.FakeEncoder if args.fake_encoder else hm_embed.Encoder)(args.model, args.threads)
+            threads = embed_runs(args.threads, args.memory_mb, os.cpu_count())[1]
+            enc["e"] = (hm_embed.FakeEncoder if args.fake_encoder else hm_embed.Encoder)(args.model, threads)
     return enc["e"]
 
 
@@ -400,9 +411,12 @@ def session(args, inbox, out, ctx, enc, begin=None):
     # new chunks are embedded with it until the deadline. Without a semantic index the search gives keyword results
     # and the İndeks tab builds the index (no model load for a few chunks). Chunks with known vectors always finish.
     want_model = mode in ("index", "update") or budget is None or bool(query and cov()["embedded"])
+    runs = embed_runs(args.threads, args.memory_mb, os.cpu_count())[0]
     stats["embed"] = hm_index.embed_pending(store, get_encoder, scope, MODEL_REVISION,
                                             stop=stop if want_model else (lambda: True),
-                                            progress=lambda d, n, rate: progress("embed", d, n, t, rate), since=since)
+                                            progress=lambda d, n, rate: progress("embed", d, n, t, rate), since=since,
+                                            runs=runs)
+    stats["embed"]["runs"] = runs
     timing["embed_s"] = round(time.perf_counter() - t, 3)
     if inbox.cancelled.is_set():
         raise Cancelled()
@@ -468,6 +482,7 @@ def main():
     ap.add_argument("--data", required=True)
     ap.add_argument("--model", required=True)
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--memory-mb", type=int, default=0, help="the memory limit of the add-in (0: not known)")
     ap.add_argument("--fake-encoder", action="store_true", help="tests only: hashed bag-of-words, no model")
     args = ap.parse_args()
     # Protocol channel = original stdout. Anything else that writes to fd 1 goes to stderr.

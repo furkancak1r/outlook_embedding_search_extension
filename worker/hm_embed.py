@@ -41,6 +41,12 @@ class FakeEncoder:
         self.np = np
         time.sleep(float(os.environ.get("HM_FAKE_LOAD_S") or 0))  # tests: a slow model load
 
+    def prepare(self, texts, max_tokens=MAX_DOC_TOKENS):
+        return list(texts), max_tokens
+
+    def run(self, prepared):
+        return self.encode(*prepared)
+
     def encode(self, texts, max_tokens=MAX_DOC_TOKENS):
         import hashlib
         import re
@@ -90,9 +96,17 @@ class Encoder(_Tokens):
         super().__init__(model_dir)
         self.sess = session(Path(model_dir) / "model.onnx", threads)
 
-    def encode(self, texts, max_tokens=MAX_DOC_TOKENS):
-        ids, mask = self.batch(texts, max_tokens)
+    def prepare(self, texts, max_tokens=MAX_DOC_TOKENS):
+        """Token ids and mask. One thread only: the tokenizer keeps its truncation and padding settings."""
+        return self.batch(texts, max_tokens)
+
+    def run(self, prepared):
+        """The model run on prepare() output. ONNX Runtime allows runs from more threads at the same time."""
+        ids, mask = prepared
         return self.sess.run(["sentence_embedding"], {"input_ids": ids, "attention_mask": mask})[0]
+
+    def encode(self, texts, max_tokens=MAX_DOC_TOKENS):
+        return self.run(self.prepare(texts, max_tokens))
 
 
 class TorchEncoder(_Tokens):

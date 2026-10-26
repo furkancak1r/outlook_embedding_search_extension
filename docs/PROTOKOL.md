@@ -8,8 +8,11 @@ The attachment messages (8a–8c) are optional: an add-in without `attachments` 
 send them gets the same behavior as before. `done.facets` and `results.similar_to` are additive fields. The `results`
 stage `semantic` (step 8s) and `done.timing.scan_work_s`, `done.timing.semantic_s` are additive too.
 
-The add-in starts `python.exe -I -B -X utf8 hm_worker.py --data <dir> --model <dir> --threads N` with the
-environment variable `HM_SESSION=<48 hex chars>`. Both sides send one UTF-8 JSON object per line on the
+The add-in starts `python.exe -I -B -X utf8 hm_worker.py --data <dir> --model <dir> --threads N --memory-mb M` with the
+environment variable `HM_SESSION=<48 hex chars>`. `--memory-mb` (since 10-26, optional, default 0) is the memory limit
+of the add-in (Job Object). With 16 threads, M >= 4096 and 16 or more CPUs, the worker runs 2 model batches of 8
+threads at the same time while it embeds (the same vectors as one batch; ~3.4 GB peak commit on 2.19). Else one batch.
+`done.stats.embed.runs` gives the number. Both sides send one UTF-8 JSON object per line on the
 child's stdin (add-in → worker, key `op`) and stdout (worker → add-in, key `ev`). There is no socket.
 
 ## Modes (`begin.mode`)

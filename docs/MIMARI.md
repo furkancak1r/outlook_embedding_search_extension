@@ -220,6 +220,11 @@ Outlook.exe (Klasik)
   aralıklarına bakar (önceki tam taramanın süzgeci de yalnız bunları kabul ediyordu). Sonuç tam taramayla aynıdır.
   İndeks dosyasındaki `items_cov` dizini (klasör, anlam durumu, okuma durumu) kapsam ve bekleyen iş sorgularının uzun
   posta satırlarını okumasını önler. Eski bir dosya bu dizini ilk açılışta bir kez alır.
+- **Anlam indekslemede iki iş (26 Ekim):** ayar 16 çekirdekse, bellek sınırı en az 4096 MB ise ve bilgisayarda en az 16
+  çekirdek varsa worker iki model işini aynı anda 8'er çekirdekle çalıştırır. Toplu işler (8 parça) bugünkülerin
+  aynısıdır, bu yüzden vektörler bit bit aynıdır. Token'lar ve kayıt ana iş parçacığındadır; vektörler toplu iş
+  sırasıyla kaydedilir. 2.19 ölçümü: saniyede 2,27 parça (16 çekirdek tek iş 2,09 ve vektörleri değiştiriyor; 4 çekirdek
+  1,34); en yüksek bellek ~3.400 MB. **Durdur** sürmekte olan işlerin bitmesini bekler.
   Ayar **Yapay zekâyı hazır tut (dk)**: varsayılan 10, 0–120. 0 eski davranıştır: her iş kendi worker'ında, iş bitince
   süreç kapanır, ön yükleme yok. Süre son işten (ya da ön yüklemenin bitişinden) sayılır.
 - Aynı anda tek worker çalışır. Arama ve indeksleme birbirini dışlar: indeksleme sürerken **Ara**, onaydan sonra
