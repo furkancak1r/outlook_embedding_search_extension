@@ -251,14 +251,23 @@ def _facets(store, limit):
             "recipients": [[k, v[1], v[0]] for k, v in top(recips)]}
 
 
-def run(store, query, now, folder_ids, encoder=None, model_rev=None, dim=512, top_k=10, allow=None):
+def run(store, query, now, folder_ids, encoder=None, model_rev=None, dim=512, top_k=10, allow=None, memo=None):
     """Search the folder scope. Without an encoder the result is keyword-only. allow: mail rowids that the filters let
     through (allowed()), None = no filter. The semantic z statistics use the whole scope, so a filter does not change
     the confidence labels. ponytail: keyword candidates are the best 400 of the file; a filtered mail outside them is
-    found by its meaning only."""
+    found by its meaning only.
+    memo: one dict for all run() calls of a worker session (keyword, semantic, final stage). The query words, the query
+    vector and the word hits of a mail text are then computed once. Each value is kept with all its inputs (the
+    vocabulary object, the encoder object, the patterns and the text), so a kept value is what a new computation gives.
+    10-23 probe (3,456 long mails): final stage 78 -> 62 ms with the lazy coverage below; the same result objects."""
+    memo = {} if memo is None else memo
     windows, spans, keep = hm_dates.parse(query, now)
     text_q = (hm_dates.remove_spans(query, spans) + " " + " ".join(keep)).strip()
-    groups = query_groups(text_q, store.vocab())
+    vocab = store.vocab()
+    g = memo.get(("groups", text_q))
+    if g is None or g[0] is not vocab:
+        g = memo[("groups", text_q)] = (vocab, query_groups(text_q, vocab))
+    groups = g[1]
     regexes = [group_regex(vs) for _, vs in groups]
     scope = store.scope_rowids(folder_ids)
     if allow is not None:
@@ -276,7 +285,11 @@ def run(store, query, now, folder_ids, encoder=None, model_rev=None, dim=512, to
 
     sem_rank, cos, best_seq, z, sem_stats = {}, {}, {}, {}, None
     if encoder is not None:
-        qv = encoder.encode([encoder_query(query)], max_tokens=128)[0]  # the full query, date words included
+        qtext = encoder_query(query)  # the full query, date words included
+        v = memo.get(("qv", qtext))
+        if v is None or v[0] is not encoder:
+            v = memo[("qv", qtext)] = (encoder, encoder.encode([qtext], max_tokens=128)[0])
+        qv = v[1]
         ids, seq, mat = store.all_vectors(model_rev, dim, folder_ids)
         if len(ids):
             item_ids, item_cos, item_seq = best_per_item(ids, seq, mat @ qv)
@@ -291,25 +304,46 @@ def run(store, query, now, folder_ids, encoder=None, model_rev=None, dim=512, to
                 sem_rank[r], cos[r], best_seq[r] = rank, float(item_cos[i]), int(item_seq[i])
                 z[r] = (cos[r] - med) / sigma
 
-    info = store.items(set(kw_rank) | set(att_rank) | set(sem_rank))
-    coverage, scored = {}, []
-    for r, it in info.items():
-        hay = fold(" ".join(it[k] or "" for k in ("subject", "sender", "sender_addr", "recipients", "attachments",
-                                                   "main_text")))
-        found = sum(1 for (g, _), rx in zip(groups, regexes) if rx.search(hay) or r in att_hits.get(g, ()))
-        coverage[r] = found / len(regexes) if regexes else 0.0
-        dt = _dt(it["sent_at"])
-        ds = hm_dates.date_score(dt, windows) if windows and dt else 0.0
+    def score(r, c, ds):
+        """Score of mail r with keyword coverage c. The same expression for the exact score and for its upper limit
+        (c = 1.0): every step (+, * by a value >= 0) is monotone, also with float rounding, so limit >= score."""
         # An attachment hit counts less than a hit in the mail itself (W_ATT): attachments are long.
         kw = (1.0 / (10 + kw_rank[r]) if r in kw_rank else 0.0) + (W_ATT / (10 + att_rank[r]) if r in att_rank else 0.0)
         if encoder is not None:
-            s = cos.get(r, -1.0) + W_COV * coverage[r] * min(1.0, len(groups) / 2) + W_DATE * ds + W_KW * kw
-        else:  # keyword-only stage: coverage first, then BM25, date as tie-breaker
-            s = coverage[r] + 0.1 * kw + 0.05 * ds
-        conf = confidence(cos.get(r), z.get(r), coverage[r], encoder is not None, len(groups))
-        if conf:
-            scored.append((s, r, ds, conf))
-    scored.sort(key=lambda x: (-x[0], x[1]))
+            return cos.get(r, -1.0) + W_COV * c * min(1.0, len(groups) / 2) + W_DATE * ds + W_KW * kw
+        return c + 0.1 * kw + 0.05 * ds  # keyword-only stage: coverage first, then BM25, date as tie-breaker
+
+    # Lazy coverage: the word hits need the whole text of a mail (fold + one regex per query word: the largest part of
+    # a search on long mails). The candidates go in the order of their upper limit (coverage 1.0); a candidate whose
+    # limit is below the top_k-th exact score cannot be in the results (a limit equal to it can: rowid breaks ties).
+    # 10-23 probe: 50-300 of 400-750 candidates read; the same results on 4 indexes, with and without filters.
+    cands = []
+    for r, it in store.items(set(kw_rank) | set(att_rank) | set(sem_rank), ("rowid", "sent_at")).items():
+        dt = _dt(it["sent_at"])
+        ds = hm_dates.date_score(dt, windows) if windows and dt else 0.0
+        cands.append((score(r, 1.0, ds), r, ds))
+    cands.sort(key=lambda x: (-x[0], x[1]))
+    pats = ("hits",) + tuple(rx.pattern for rx in regexes)
+    info, coverage, scored = {}, {}, []
+    for b in range(0, len(cands), 50):
+        if len(scored) >= top_k and cands[b][0] < scored[top_k - 1][0]:
+            break
+        part = cands[b:b + 50]
+        info.update(store.items(r for _, r, _ in part))
+        for _, r, ds in part:
+            it = info[r]
+            text = " ".join(it[k] or "" for k in ("subject", "sender", "sender_addr", "recipients", "attachments",
+                                                   "main_text"))
+            hits = memo.get((pats, text))  # key: the patterns and the text itself
+            if hits is None:
+                hay = fold(text)
+                hits = memo[(pats, text)] = [rx.search(hay) is not None for rx in regexes]
+            found = sum(1 for (g, _), h in zip(groups, hits) if h or r in att_hits.get(g, ()))
+            coverage[r] = found / len(regexes) if regexes else 0.0
+            conf = confidence(cos.get(r), z.get(r), coverage[r], encoder is not None, len(groups))
+            if conf:
+                scored.append((score(r, coverage[r], ds), r, ds, conf))
+        scored.sort(key=lambda x: (-x[0], x[1]))
 
     out = []
     for s, r, ds, conf in scored[:top_k]:

@@ -207,10 +207,14 @@ Outlook.exe (Klasik)
   yükler (`preload`). İlk arama da modeli beklemez. Bellek: pencere açıkken ~1–1,5 GB (2.19 ölçümü).
   23 Ekim'den beri yükleme ayrı bir iş parçacığında (thread) çalışır. Yükleme sürerken başlayan arama klasörleri tarar ve
   kelime sonuçlarını hemen gösterir; yalnız anlamsal adım yüklemenin bitmesini bekler. Model bir kez yüklenir.
-- **Bellek önbelleği (23 Ekim):** hazır bekleyen worker, aranan klasörlerin vektör matrisini ve filtre listelerini
-  (`done.facets`) bellekte tutar. İndeks dosyasındaki tetikleyiciler (trigger) her posta, parça ve vektör değişikliğinde
-  `meta.data_gen` değerini artırır; değer değişince önbellek yeniden okunur. Sonuçlar yeni sorguyla aynıdır. Bellek:
-  parça başına 2 KB (28.632 parça: 56 MB).
+- **Bellek önbelleği (23 Ekim):** hazır bekleyen worker, aranan klasörlerin vektör matrisini, kelime listesini (FTS
+  sözlüğü) ve filtre listelerini (`done.facets`) bellekte tutar. İndeks dosyasındaki tetikleyiciler (trigger) her posta,
+  parça ve vektör değişikliğinde `meta.data_gen` değerini artırır; değer değişince önbellek yeniden okunur. Sonuçlar yeni
+  sorguyla aynıdır. Bellek: parça başına 2 KB (28.632 parça: 56 MB); kelime listesi 67 bin kelimede ~2 MB.
+- **Bir aramanın aşamaları (23 Ekim):** kelime, erken anlamsal ve son liste aşaması sorgu kelimelerini, sorgu vektörünü
+  ve bir posta metnindeki kelime eşleşmelerini bir kez hesaplar. Kelime kapsamı (sorgu kelimelerinin postada geçip
+  geçmediği) yalnız ilk sonuçlara girebilecek adaylar için hesaplanır: adaylar, kapsam tam sayılınca alacakları puana
+  göre sıralanır; bu puan sıradaki sonucun puanının altına düşünce okuma durur. Sonuçlar tüm adayları okumakla aynıdır.
   Ayar **Yapay zekâyı hazır tut (dk)**: varsayılan 10, 0–120. 0 eski davranıştır: her iş kendi worker'ında, iş bitince
   süreç kapanır, ön yükleme yok. Süre son işten (ya da ön yüklemenin bitişinden) sayılır.
 - Aynı anda tek worker çalışır. Arama ve indeksleme birbirini dışlar: indeksleme sürerken **Ara**, onaydan sonra

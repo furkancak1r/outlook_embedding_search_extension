@@ -342,9 +342,10 @@ def session(args, inbox, out, ctx, enc, begin=None):
 
     # 3) Keyword results first (no model needed).
     allow = hm_search.allowed(store, scope, filters) if mode == "search" else None  # after the read: new mails count
+    memo = {}  # the work that the keyword, semantic and final stage share (hm_search.run)
     if mode == "search":
         t = time.perf_counter()
-        res = hm_search.run(store, query, now, scope, top_k=top_k, allow=allow)
+        res = hm_search.run(store, query, now, scope, top_k=top_k, allow=allow, memo=memo)
         timing["keyword_s"] = round(time.perf_counter() - t, 3)
         out.send("results", stage="keyword", coverage=cov(), **res)
 
@@ -372,7 +373,7 @@ def session(args, inbox, out, ctx, enc, begin=None):
         encoder = get_encoder()
         t = time.perf_counter()
         res = hm_search.run(store, query, now, scope, encoder=encoder, model_rev=MODEL_REVISION, dim=DIM, top_k=top_k,
-                            allow=allow)
+                            allow=allow, memo=memo)
         out.send("results", stage="semantic", coverage=cov(), **res)
         timing["semantic_s"] = round(time.perf_counter() - t, 3)
         if deadline is not None:
@@ -415,7 +416,7 @@ def session(args, inbox, out, ctx, enc, begin=None):
         # No semantic index yet (budget 0 or a new store): keyword results only, the model is not loaded.
         encoder = get_encoder() if query and cov()["embedded"] else None
         res = hm_search.run(store, query, now, scope, encoder=encoder, model_rev=MODEL_REVISION, dim=DIM, top_k=top_k,
-                            allow=allow)
+                            allow=allow, memo=memo)
         timing["final_s"] = round(time.perf_counter() - t, 3)
         out.send("results", stage="final", coverage=cov(), **res)
     timing["total_s"] = round(time.perf_counter() - t0, 3)

@@ -6,6 +6,7 @@ One database file per Outlook store (account separation). Only one worker proces
 import json
 import sqlite3
 import time
+import types
 
 import numpy as np
 
@@ -352,11 +353,14 @@ class Store:
 
     # -- keyword search -----------------------------------------------------------------------
     def vocab(self):
-        """{term: document count} of the mail FTS index (loaded once per worker run).
+        """{term: document count} of the mail FTS index, read only. Kept for this Store until a write, and in a kept
+        worker (Store.cached) until data_gen changes: a mail FTS row changes only with an items row (insert, delete).
+        10-23 probe: 28 ms per session for 30K terms, 130 ms for 400K terms; 2 MB for 67K terms.
         ponytail: attachment words are not in it (spreadsheets bring many codes and numbers; the typo scan is
         linear). A typo in a word that is only in an attachment is not corrected; the exact word still matches."""
         if self._vocab is None:
-            self._vocab = dict(self.db.execute("SELECT term, doc FROM fts_vocab"))
+            self._vocab = self.cached("vocab", (), lambda: types.MappingProxyType(
+                dict(self.db.execute("SELECT term, doc FROM fts_vocab"))))
         return self._vocab
 
     def fts(self, match, limit=400):
@@ -393,13 +397,14 @@ class Store:
         return {r for (r,) in self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
             f"SELECT rowid FROM items WHERE folder_id IN ({_in(len(folder_ids))})", list(folder_ids))}
 
-    def items(self, rowids):
+    def items(self, rowids, cols=ITEM_COLS):
+        """{rowid: {column: value}}. cols: fixed column names of this module (never input), "rowid" first."""
         rowids = list(rowids)
         out = {}
         for i in range(0, len(rowids), 500):
             part = rowids[i:i + 500]
-            out.update((r[0], dict(zip(ITEM_COLS, r))) for r in self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
-                f"SELECT {', '.join(ITEM_COLS)} FROM items WHERE rowid IN ({_in(len(part))})", part))
+            out.update((r[0], dict(zip(cols, r))) for r in self.db.execute(  # nosemgrep: sqlalchemy-execute-raw-query
+                f"SELECT {', '.join(cols)} FROM items WHERE rowid IN ({_in(len(part))})", part))
         return out
 
     # -- coverage -----------------------------------------------------------------------------

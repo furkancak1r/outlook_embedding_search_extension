@@ -212,6 +212,120 @@ class StoreSearchTests(unittest.TestCase):
             self.store.mark_stale([self.store.item_state(["E1"])["E1"][0]])
         self.assertEqual(self.store.meta("data_gen"), gen)
 
+    def test_vocab_cache(self):
+        """The FTS vocabulary of a kept worker: one object for the sessions while the index does not change, the same
+        terms as a new query after a new and a deleted mail, read only."""
+        path = self.store.path
+        fresh = lambda s: dict(s.db.execute("SELECT term, doc FROM fts_vocab"))
+        a, b = Store(path, REV), Store(path, REV)  # two sessions of one worker
+        self.assertIs(a.vocab(), b.vocab())
+        self.assertEqual(dict(a.vocab()), fresh(a))
+        with self.assertRaises(TypeError):
+            a.vocab()["neu"] = 1
+        for step in (lambda s: hm_index.ingest(s, mail("E9", "Zeplin", "Zeplin sevkiyatı yarın."), 2, REV),
+                     lambda s: s.delete_item(s.item_state(["E9"])["E9"][0])):
+            with a.tx():
+                step(a)
+            c = Store(path, REV)
+            for s in (a, c):  # the writer and a new session see the new terms
+                self.assertEqual(dict(s.vocab()), fresh(s))
+                self.assertEqual("zeplin" in s.vocab(), "zeplin" in fresh(s))
+            c.close()
+        a.close(), b.close()
+
+    def test_session_memo_and_lazy_coverage(self):
+        """run() with one memo for the keyword and the final stage gives the same results as run() without it, also
+        after the index changes between two runs (a new mail with the query words). Ties: mails with equal scores keep
+        the rowid order, and the 10th place is the same with a top_k of 1, 2 and 3."""
+        memo = {}
+        for q in ("kargo faturası", "toplanti notlari butce", "geçen ay Ahmet'ten gelen kargo faturası", "uzay mekiği"):
+            plain = (hm_search.run(self.store, q, NOW, ["F1"]), self.search_full(q))
+            with_memo = (hm_search.run(self.store, q, NOW, ["F1"], memo=memo), self.search_full(q, memo=memo))
+            self.assertEqual(plain, with_memo, q)
+        with self.store.tx():
+            hm_index.ingest(self.store, mail("E7", "Kargo faturası", "Kasım kargo faturası.", "2026-09-28T09:00:00"), 2, REV)
+        hm_index.embed_pending(self.store, lambda: self.enc, ["F1"], REV)
+        self.assertEqual(self.search_full("kargo faturası", memo=memo), self.search_full("kargo faturası"))
+        self.assertIn("E7", [r["eid"] for r in self.search_full("kargo faturası")["results"]])
+        with self.store.tx():  # equal mails: the same score, the order is the rowid
+            for i in range(6):
+                hm_index.ingest(self.store, mail("T%d" % i, "Paket", "Paket teslim edildi.", "2026-09-01T09:00:00"), 3, REV)
+        full = [r["eid"] for r in hm_search.run(self.store, "paket teslim", NOW, ["F1"], top_k=10)["results"]]
+        self.assertEqual(full[:6], ["T%d" % i for i in range(6)])
+        for k in (1, 2, 3):
+            self.assertEqual([r["eid"] for r in hm_search.run(self.store, "paket teslim", NOW, ["F1"], top_k=k)["results"]],
+                             full[:k])
+
+    def search_full(self, q, **kw):
+        return hm_search.run(self.store, q, NOW, ["F1"], encoder=self.enc, model_rev=REV, **kw)
+
+    def test_memo_follows_changed_text(self):
+        """A memo entry belongs to a text, not to a rowid: SQLite gives the next new row the rowid of a deleted last
+        row, so a changed mail can come back with its old rowid and a new text."""
+        last = max(self.store.scope_rowids(["F1"]))
+        eid = self.store.items([last])[last]["entry_id"]
+        memo = {}
+        before = self.search_full("zeplin kargosu", memo=memo)
+        self.assertNotIn(eid, [r["eid"] for r in before["results"] if r["coverage"] == 1.0])
+        with self.store.tx():
+            hm_index.ingest(self.store, mail(eid, "Zeplin kargosu", "Zeplin kargosu yarın gelir."), 2, REV)
+        hm_index.embed_pending(self.store, lambda: self.enc, ["F1"], REV)
+        self.assertEqual(self.store.item_state([eid])[eid][0], last)  # the same rowid, a new text
+        self.assertEqual(self.search_full("zeplin kargosu", memo=memo), self.search_full("zeplin kargosu"))
+
+    def test_lazy_coverage_stop_rule(self):
+        """The read stops only when the next upper limit is below the top_k-th exact score of the mails read so far.
+        Fixed cosines (query vector e1): C0 0.75 and 48 others 0.74 without the query words, C1 0.70 and C50 0.66 with
+        both words. Upper limits: C0 0.83 > C1 0.825 > the 48 at 0.82 (the first read batch of 50) > C50 0.782.
+        Exact scores: C1 0.825 > C50 0.782 > C0 0.75 > the 48 at 0.74. So the 2nd result, C50, is after the first batch,
+        and the 2nd mail of that batch by upper limit (C1) has a higher score than the 2nd best of the batch (C0)."""
+        import numpy as np
+        with self.store.tx():
+            hm_index.ingest(self.store, mail("C0", "Teslimat", "Teslim edildi.", sender="Ece Su"), 2, REV)
+            hm_index.ingest(self.store, mail("C1", "Zeplin palet", "Zeplin palet.", sender="Ece Su"), 2, REV)
+            for i in range(48):
+                hm_index.ingest(self.store, mail("F%d" % i, "Teslimat %d" % i, "Teslim edildi.", sender="Ece Su"), 2, REV)
+            hm_index.ingest(self.store, mail("C50", "Zeplin ve palet", "Yarın zeplin ile palet gelir, depo hazır olsun.",
+                                             sender="Ece Su"), 2, REV)
+        cos = {"C0": 0.75, "C1": 0.70, "C50": 0.66}
+        vec = lambda c: np.array([c, (1 - c * c) ** 0.5] + [0.0] * 510, np.float32)
+        rows = self.store.db.execute("SELECT i.entry_id, c.text_hash FROM items i JOIN chunks c ON c.item_rowid=i.rowid"
+                                     " WHERE i.entry_id LIKE 'C%' OR i.entry_id LIKE 'F%'").fetchall()
+        with self.store.tx():
+            self.store.put_vectors([(h, vec(cos.get(e, 0.74))) for e, h in rows], REV)
+
+        class E1:
+            def encode(self, texts, max_tokens=128):
+                return np.array([vec(1.0)])
+
+        res = lambda k: [r["eid"] for r in hm_search.run(self.store, "zeplin palet", NOW, ["F1"], encoder=E1(),
+                                                         model_rev=REV, top_k=k)["results"]]
+        self.assertEqual(res(10**6)[:3], ["C1", "C50", "C0"])
+        for k in (1, 2, 3, 10):
+            self.assertEqual(res(k), res(10**6)[:k], k)
+
+    def test_lazy_coverage_many_candidates(self):
+        """More candidates than one read batch (50): the first top_k results are the first top_k of a full evaluation
+        (top_k larger than all candidates), in the keyword and the final stage, with and without a date and a filter."""
+        import random
+        rnd = random.Random(4)
+        words = "zeplin kargo fatura teslim depo palet bakım rapor sevk stok".split()
+        with self.store.tx():
+            for i in range(160):
+                body = " ".join(rnd.choice(words) for _ in range(rnd.randint(1, 30)))
+                subj = " ".join(rnd.sample(words, rnd.randint(1, 3)))
+                d = "2026-%02d-%02dT09:00:00" % (rnd.randint(1, 10), rnd.randint(1, 28))
+                hm_index.ingest(self.store, mail("R%d" % i, subj, body, d, sender=rnd.choice(["Ali Can", "Ece Su"])), 2, REV)
+        hm_index.embed_pending(self.store, lambda: self.enc, ["F1"], REV)
+        allow = hm_search.allowed(self.store, ["F1"], {"sender": hm_search.sender_key("Ali Can", "ali@x.example")})
+        for q in ("zeplin kargo", "geçen ay fatura teslim", "depo palet stok sevk", "bakım"):
+            for enc in (None, self.enc):
+                for a in (None, allow):
+                    full = hm_search.run(self.store, q, NOW, ["F1"], encoder=enc, model_rev=REV, top_k=10**6, allow=a)
+                    for k in (1, 3, 10):
+                        got = hm_search.run(self.store, q, NOW, ["F1"], encoder=enc, model_rev=REV, top_k=k, allow=a)
+                        self.assertEqual(got["results"], full["results"][:k], (q, enc is not None, a is not None, k))
+
     def test_sweep_removes_deleted(self):
         with self.store.tx():
             state = self.store.item_state(["E1", "E2", "E3"])

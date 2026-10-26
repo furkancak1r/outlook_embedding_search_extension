@@ -77,9 +77,10 @@ during the load starts at once (scan, read, keyword results), and its first use 
 load per process). The `model` events of the preload can come between the events of that session. Without vectors
 (no semantic index) nothing is loaded.
 
-A kept worker also keeps the vector matrix of the scope and `done.facets` in memory while the index file does not
-change (SQLite triggers count every change of mails, chunks and vectors in `meta.data_gen`). The results are the same as
-with a new query.
+A kept worker also keeps the vector matrix of the scope, the keyword vocabulary and `done.facets` in memory while the
+index file does not change (SQLite triggers count every change of mails, chunks and vectors in `meta.data_gen`). In one
+search session the keyword, semantic and final stage compute the query words, the query vector and the word hits of a
+mail text once. The results are the same as with a new query.
 
 The session token (`HM_SESSION`) is the same for all sessions of one process.
 
