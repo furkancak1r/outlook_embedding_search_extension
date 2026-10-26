@@ -854,7 +854,9 @@ class AttachmentTests(unittest.TestCase):
         hm_index.embed_pending(self.store, lambda: self.enc, ["F1", "F2"], REV)
         with self.store.tx():
             self.store.set_folder("F2", "\\Özel", 1)
-        count = lambda t: self.store.db.execute(f"SELECT count(*) FROM {t}").fetchone()[0]  # nosemgrep: sqlalchemy-execute-raw-query
+        # Fixed table names only (a table name cannot be a bound parameter): one prepared text per table.
+        sql = {t: "SELECT count(*) FROM " + t for t in ("vectors", "atts", "att_texts", "folders")}
+        count = lambda t: self.store.db.execute(sql[t]).fetchone()[0]
         n_vec = count("vectors")
         self.assertTrue(b"zebragizli" in raw() and b"galvanizli" in raw())
         self.assertEqual(self.store.purge_folders(["F2", "F9"]), 1)
@@ -935,9 +937,12 @@ class AttachmentTests(unittest.TestCase):
 class ProtocolTests(unittest.TestCase):
     """Start the real worker process (fake encoder) and talk JSON lines to it."""
 
-    def start(self, data, token="s" * 32, args=()):
-        env = dict(os.environ, HM_SESSION=token, PYTHONIOENCODING="utf-8")
-        return subprocess.Popen([sys.executable, "-I", "-B", "-X", "utf8", str(WORKER / "hm_worker.py"), "--data", data,
+    def start(self, data, token="s" * 32, args=(), **env):
+        """The worker process with the fake encoder. env: more environment variables (HM_FAKE_LOAD_S: a slow model load).
+        Text pipes in UTF-8, as the add-in uses them (the default text encoding of Windows is the ANSI code page)."""
+        env = dict(os.environ, HM_SESSION=token, PYTHONIOENCODING="utf-8", **env)
+        # The tests run on Python 3.13 only (the worker needs it): the Python 3.6 rule for Popen(encoding=) does not apply.
+        return subprocess.Popen([sys.executable, "-I", "-B", "-X", "utf8", str(WORKER / "hm_worker.py"), "--data", data,  # nosemgrep: python36-compatibility-Popen2
                                  "--model", "unused", "--fake-encoder", *args], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True,
                                 encoding="utf-8")
@@ -1035,10 +1040,7 @@ class ProtocolTests(unittest.TestCase):
             mails = [mail("E1", "Kargo faturası", "Eylül kargo faturası.", "2026-09-12T09:00:00"),
                      mail("E2", "Sunucu bakımı", "Cumartesi bakım.", "2026-09-20T09:00:00")]
             self.run_session(d, mails, "", mode="index")
-            env = dict(os.environ, HM_SESSION="s" * 32, PYTHONIOENCODING="utf-8", HM_FAKE_LOAD_S="2")
-            p = subprocess.Popen([sys.executable, "-I", "-B", "-X", "utf8", str(WORKER / "hm_worker.py"), "--data", d,
-                                  "--model", "unused", "--fake-encoder"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8")
+            p = self.start(d, HM_FAKE_LOAD_S="2")
             t0 = time.time()
             self.assertEqual([e["ev"] for e in self.begin_status(p, keep_alive_s=30, preload=True)], ["hello", "done"])
             ev, _ = self.play(p, mails, "kargo faturası", keep_alive_s=30)
@@ -1283,10 +1285,7 @@ class ProtocolTests(unittest.TestCase):
             self.assertIn("model", [e.get("phase") for e in ev1])
             self.assertEqual(len(rows()), 1)
             self.assertEqual(rows()[0][1:], ("914f7f89142e33e77833254d9c9b90c3cef7303b", 512 * 4))
-            env = dict(os.environ, HM_SESSION="s" * 32, PYTHONIOENCODING="utf-8", HM_FAKE_LOAD_S="2")
-            p = subprocess.Popen([sys.executable, "-I", "-B", "-X", "utf8", str(WORKER / "hm_worker.py"), "--data", d,
-                                  "--model", "unused", "--fake-encoder"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8")
+            p = self.start(d, HM_FAKE_LOAD_S="2")
             t0 = time.time()
             ev2, _ = self.play(p, mails, q, keep_queries=keep)
             self.close(p)
