@@ -13,7 +13,7 @@ Yapay zekâ modeli yalnız sizin bilgisayarınızda çalışır. Postalarınız 
 | .NET Framework | 4.8 (Windows 10/11 ile gelir) |
 | Visual C++ çalışma kitaplığı | Microsoft Visual C++ 2015–2022 Redistributable (x64). Yapay zekâ kitaplığı (ONNX Runtime) bunu ister; çoğu Windows'ta yüklüdür. Test makinesinde 14.42 sürümü vardı. |
 | Disk | Kurulum için yaklaşık 1,8 GB (paket 544 MB + kurulum klasörü 1,25 GB). İndeks: 316 sentetik posta için 1,1 MB ölçüldü; gerçek postalar daha uzun olduğu için 10.000 posta başına 40–80 MB tahmin edilir. |
-| Bellek | Pencere açıkken arama işlemi yaklaşık 0,7 GB, indeksleme sırasında 4 çekirdekte en çok yaklaşık 2,4 GB, 16 çekirdekte yaklaşık 3,4 GB kullanır (2.19 ölçümü). Pencere kapanınca ya da "Yapay zekâyı hazır tut" süresi dolunca bu bellek boşalır |
+| Bellek | Pencere açıkken arama işlemi yaklaşık 0,7 GB, indeksleme sırasında 4 çekirdekte en çok yaklaşık 2,4 GB, 16 çekirdekte yaklaşık 3,4 GB kullanır (2.19 ölçümü). "Yapay zekâyı hazır tut" süresi ya da pencere kapandıktan sonraki süre (varsayılan 5 dk) dolunca bu bellek boşalır |
 | Yetki | Yönetici yetkisi gerekmez. Kurulum yalnız sizin kullanıcı hesabınızı etkiler. |
 
 ## Kurulum (kurulum programıyla, önerilen yol)
@@ -145,6 +145,15 @@ Anlam indekslemeyi hızlandırmak için Ayarlar sekmesinde **İşlemci çekirde�
 işlenen parça): 4 çekirdek 1,3; 8 çekirdek 1,7; 16 çekirdek 2,3. Sonuçlar her değerde aynıdır. Daha çok çekirdek,
 indeksleme sürerken Outlook'u ve bilgisayarı yavaşlatabilir.
 
+Tam indeksleme ve Güncelle düşük işlem önceliğinde çalışır: Windows işlemciyi önce Outlook'a ve öteki programlara
+verir. Bilgisayar meşgulken indeksleme bu yüzden daha uzun sürebilir.
+
+**Pille çalışırken:** Ayarlar'da "Pille çalışırken indekslemeyi duraklat" işaretliyse (varsayılan), dizüstü bilgisayar
+prizden çıkınca indeksleme yaklaşık 10 saniye içinde durur. Yapılan iş kaydedilir. Prize takılınca indeksleme kaldığı
+yerden kendiliğinden sürer. Bunun için HatırMail penceresi açık ya da simge durumunda olmalıdır; pencereyi kapatırsanız
+bekleme de biter. Pille çalışırken **İndekslemeyi başlat**'a basarsanız indeksleme prize takılınca başlar. Beklemeyi iptal
+etmek için İndeks sekmesinde **Durdur**'a basın. Hemen başlatmak için kutunun işaretini kaldırıp **Kaydet**'e basın.
+
 ### İndeksi güncel tutma: Güncelle
 
 Tam indekslemeden sonra İndeks sekmesinde **Güncelle**'ye basın (kısayol: Alt+G). HatırMail yalnız son indekslemeden sonra
@@ -265,6 +274,9 @@ HatırMail başlattığınız son 20 aramayı bu bilgisayarda saklar. Sık yapt�
   basın. Aynı adla yeniden kaydederseniz eski kaydın sorgusu değişir.
 - **Silme:** **Aramalar ▼** > **Kayıtlı aramayı sil** ya da **Son aramaları temizle**. Son aramaları temizlemek kayıtlı
   aramaları silmez.
+- **Hızlı tekrar:** Son ve kayıtlı aramaların sorgu vektörleri indeks dosyasında saklanır (sorgu metni saklanmaz). Bu
+  aramalardan biri yeniden yapılınca anlamsal sonuçlar, model yüklenmemiş olsa bile hemen gelir. Listeden silinen
+  aramanın vektörü de silinir.
 
 ### Ek içeriği
 
@@ -274,13 +286,14 @@ HatırMail eklerin içindeki metni de arar:
 |---|---|
 | Excel (xlsx, xlsm, xls), Word (docx), PowerPoint (pptx), OpenDocument (odt, ods, odp) | Evet |
 | PDF | Evet. Taranmış (metni olmayan) sayfalar OCR ile okunur, dosya başına en çok 3 sayfa. |
-| Resim (png, jpg, bmp, gif, tif) | Evet, Windows OCR ile. Küçük imza logoları okunmaz. |
+| Resim (png, jpg, bmp, gif, tif) | Evet, Windows OCR ile. Küçük resimler OCR'ye gönderilmez: kısa kenarı 24 pikselden küçük ya da toplam 20.000 pikselden az olanlar (sosyal medya simgeleri, imza logoları, satır içi küçük görseller). |
 | Eklenmiş e-posta (msg), zip | Evet (zip içindeki desteklenen dosyalar) |
 | txt, csv, html, xml | Evet |
 | rar, 7z, eski doc/ppt, video, ses, CAD | Hayır, yalnız dosya adı aranır |
 
-- Ekler indekslemede bir kez okunur. Sonraki çalışmalar yalnız yeni ekleri okur. Aynı dosya birden çok postada varsa bir
-  kez okunur.
+- Ekler indekslemede bir kez okunur. Sonraki çalışmalar yalnız yeni ekleri okur. Aynı dosya birden çok postada varsa
+  (yanıtlarda ve iletilen postalarda olduğu gibi) bir kez okunur ve OCR'den bir kez geçer. Konusu aynı olan yanıt ve
+  iletilen postada ekin anlam vektörleri de yeniden kullanılır.
 - 20 MB'tan büyük ekler, parola korumalı dosyalar ve bozuk dosyalar okunmaz. Posta yine bulunabilir.
 - OCR, Windows'un kendi OCR özelliğidir. Windows'ta yüklü dil paketlerinin OCR dillerini kullanır (Türkçe Windows'ta
   Türkçe). İndeks sekmesinde "Ek dosyaları" çubuğu ve klasör listesindeki "Ekler" sütunu okunan/toplam eki gösterir.
@@ -305,16 +318,19 @@ varsayılana döndürür (kaydetmek için yine **Kaydet**'e basın).
 | Sekmedeki ad | `settings.json` | Varsayılan | Aralık | Anlamı |
 |---|---|---|---|---|
 | İşlemci çekirdeği | `threads` | 4 | 1–16 | Modelin kullanacağı en çok CPU çekirdeği. Çok çekirdek indekslemeyi hızlandırır ama Outlook'u yavaşlatabilir. 16 seçilirse ve bilgisayarda en az 16 çekirdek varsa, anlam indeksleme iki işi aynı anda 8'er çekirdekle yapar (bellek sınırı en az 4096 MB olmalı). Sonuçlar aynıdır |
+| Pille çalışırken indekslemeyi duraklat | `pause_on_battery` | true | – | Tam indeksleme ve Güncelle pille çalışırken durur, prize takılınca kaldığı yerden sürer |
 | Bellek sınırı (MB) | `memory_limit_mb` | 4096 | 2048–32768 | Arama işleminin bellek sınırı (Windows Job Object). 2.19 ölçümü: modelle indeksleme 4 çekirdekte en çok ~2.350 MB, 16 çekirdekte (iki iş) en çok ~3.400 MB |
 | Aramada indeksleme (sn) | `search_index_budget_s` | 20 | 0–600 | Ara'ya basınca yeni postaları indekslemek için en çok bu kadar beklenir. 0: aramada indeksleme yok |
-| Yapay zekâyı hazır tut (dk) | `keep_alive_min` | 10 | 0–120 | Pencere açıkken model son işten sonra bu kadar dakika bellekte kalır; aramalar modeli beklemez. Pencere kapanınca model de kapanır. 0: her aramada model yeniden yüklenir ve iş bitince bellek boşalır |
+| Yapay zekâyı hazır tut (dk) | `keep_alive_min` | 10 | 0–120 | Pencere açıkken model son işten sonra bu kadar dakika bellekte kalır; aramalar modeli beklemez. 0: her aramada model yeniden yüklenir ve iş bitince bellek boşalır (o zaman "Kapandıktan sonra" da etkisizdir) |
+| Kapandıktan sonra (dk) | `keep_after_close_min` | 5 | 0–10 | Pencere kapandıktan sonra model bu kadar dakika bellekte kalır. Pencere bu sürede yeniden açılırsa model yeniden yüklenmez. Süre dolunca model kapanır ve bellek boşalır. Outlook kapanınca model hemen kapanır. 0: pencere kapanınca model de kapanır |
 | Ek dosyalarının içinde de ara | `attachments` | true | – | Eklerin içeriğini oku ve ara. Kapalıysa yalnız ek adları aranır |
 | Klasörleri hariç tut… | `excluded_folders` | (yok) | – | Posta kutusu kimliği → hariç tutulan klasör kimlikleri. Bir posta kutusu için kayıt yoksa varsayılan klasörler hariç tutulur (aşağıya bakın). Boş liste: hiçbir klasör hariç tutulmaz |
 | (yalnız dosyada) | `idle_timeout_s` | 300 | 30–3600 | Eklenti yanıt vermezse arama işleminin kendini kapatma süresi |
 | (yalnız dosyada) | `session_timeout_s` | 7200 | ≥ 60 | Bir aramanın en uzun süresi. Tam indekslemenin süre sınırı yoktur; 15 dakika hiç ilerleme olmazsa durur |
 
 Eski `embed_budget_s` ayarı artık kullanılmaz. Var olan bir `settings.json` kurulumda değiştirilmez; yeni
-`search_index_budget_s` yoksa varsayılan 20 saniye, `keep_alive_min` yoksa varsayılan 10 dakika geçerlidir.
+`search_index_budget_s` yoksa varsayılan 20 saniye, `keep_alive_min` yoksa varsayılan 10 dakika,
+`keep_after_close_min` yoksa 5 dakika, `pause_on_battery` yoksa açık geçerlidir.
 İşlemci çekirdeği ya da bellek sınırı değişince hazır tutulan model kapanır; sonraki iş yeni değerlerle başlar.
 
 ### Klasörleri indeksten hariç tutma

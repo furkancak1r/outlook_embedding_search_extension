@@ -4,7 +4,9 @@ Klasik Outlook için yerel, hatırlamaya dayalı e-posta araması. Kullanıcı h
 İngilizce yazar; eklenti ilgili gerçek e-postaları bulur ve Outlook'ta açar. Eklerin içeriği de aranır (Excel, Word,
 PowerPoint, PDF, resimler Windows OCR ile, eklenmiş iletiler, zip). Yapay zekâ (EmbeddingGemma 2, yalnız 270M metin
 bileşeni, ONNX Runtime) kullanıcının kendi bilgisayarında çalışır. Model arama penceresi açılınca yüklenir ve
-pencere açıkken hazır kalır; aramalar modeli beklemez. Pencere kapanınca model de kapanır. Pencerede üç sekme vardır: **Ara**
+pencere açıkken hazır kalır; aramalar modeli beklemez. Pencere kapandıktan sonra model ayarlanan süre kadar (varsayılan
+5 dk) kalır, sonra kapanır. Son ve kayıtlı aramalar model yüklenmeden anlamsal sonuç verir. İndeksleme düşük öncelikte
+çalışır ve pille çalışırken duraklar. Pencerede üç sekme vardır: **Ara**
 (gönderen, alıcı, klasör, tarih ve ek filtreleriyle; sütun başlığına tıklayarak sıralama), **İndeks** (indeks durumu, yüzdeler, tam indeksleme ve yalnız değişiklikleri işleyen
 **Güncelle**) ve **Ayarlar** (indekslenmeyecek klasörleri seçme dahil). Outlook'ta bir e-postaya sağ tıklayınca
 **Benzerlerini bul** aynı konudaki e-postaları listeler.
@@ -36,7 +38,7 @@ python3.13 packaging/make_text_only.py models/embeddinggemma-2 models/text-only
 # ONNX export + parity (dev venv .venv-onnx: torch 2.14.1, transformers 5.19.0, onnx 1.23.2, onnxscript 0.7.2, onnxruntime 1.31.0)
 .venv-onnx/bin/python eval/export_onnx.py models/text-only models/onnx
 .venv-onnx/bin/python eval/parity_onnx.py models/text-only models/onnx reports/parity-mac.json 4
-.venv/bin/python -m unittest discover -s worker/tests                    # 58 tests (1 is Windows OCR only), no model
+.venv/bin/python -m unittest discover -s worker/tests                    # 76 tests (1 is Windows OCR only), no model
 python3.13 eval/make_corpus.py                                           # deterministic synthetic data
 .venv/bin/python eval/run_eval.py --model models/onnx --data tmp/eval --out reports/eval-mac.json
 .venv/bin/python eval/run_eval.py --att --model models/onnx --data tmp/eval-att --out reports/eval-att-mac.json

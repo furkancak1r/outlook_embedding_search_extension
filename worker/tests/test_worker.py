@@ -442,6 +442,32 @@ class StoreSearchTests(unittest.TestCase):
         self.assertFalse(st["stopped"])
         self.assertEqual(self.store.db.execute("SELECT count(*) FROM items WHERE embedded=0").fetchone()[0], 0)
 
+    def test_batches_by_token_length(self):
+        """The chunks of a window go to the model sorted by their token count (encoder.lengths), not by their
+        characters: less padding. stats count the real tokens and the tokens with the padding."""
+        with self.store.tx():
+            for i in range(12):  # one chunk each: few long words (many chars) or many short words (few chars)
+                body = ("Uzunsözcükleryazılmışmetin%d " % i) * (30 - 2 * i) if i % 2 else "kısa söz " * (4 + 6 * i)
+                hm_index.ingest(self.store, mail("T%d" % i, "Konu %d" % i, body), 2, REV)
+
+        class Rec(type(self.enc)):
+            seen = []
+
+            def prepare(self, texts, max_tokens=512):
+                Rec.seen.append(list(texts))
+                return super().prepare(texts, max_tokens)
+
+        enc = Rec()
+        st = hm_index.embed_pending(self.store, lambda: enc, ["F1"], REV)
+        flat = [t for b in Rec.seen for t in b]
+        lens = enc.lengths(flat)
+        self.assertEqual((len(Rec.seen), len(flat)), (2, 12))  # one window, batches of 8
+        self.assertNotEqual(enc.lengths(sorted(flat, key=len)), sorted(lens))  # a char sort gives another order
+        self.assertEqual(lens, sorted(lens))
+        self.assertEqual(st["tokens"], sum(lens))
+        self.assertEqual(st["padded_tokens"], sum(max(enc.lengths(b)) * len(b) for b in Rec.seen))
+        self.assertLess(st["tokens"], st["padded_tokens"])
+
     def test_parallel_embedding_same_vectors(self):
         """runs=2: the same batches as runs=1, so the same vectors and stats; two model runs overlap; the vectors are
         saved in batch order by this thread; a stop before a new batch lets the running batches finish and be saved;
@@ -691,6 +717,53 @@ class AttachmentTests(unittest.TestCase):
             self.assertIn("ort 2.0", r.stdout)
             self.assertIn("False False", r.stdout)
             self.assertEqual([str(p) for p in Path(home).rglob("*")], [])  # no device id, no event database
+
+    def test_small_images_skip_ocr(self):
+        """Icons, spacer pixels and signature logos are not sent to OCR (hm_attach.ocr_worth); a screenshot and the OCR
+        fixtures (1500 x 420) are. On Windows: a small PNG gives 'empty' without an OCR run."""
+        for (w, h), want in (((1, 1), False), ((16, 16), False), ((64, 64), False), ((150, 50), False), ((200, 80), False),
+                             ((2000, 23), False), ((24, 834), True), ((300, 100), True), ((640, 32), True),
+                             ((1500, 420), True)):
+            self.assertEqual(hm_attach.ocr_worth(w, h), want, (w, h))
+        if sys.platform != "win32":
+            return
+        import struct
+        import zlib
+
+        def png(w, h):
+            chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+            raw = b"".join(b"\x00" + b"\xff" * (w * 3) for _ in range(h))
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+        class NoOcr:
+            def recognize_async(self, _):
+                raise AssertionError("OCR must not run for a small image")
+
+        old = hm_attach._engine
+        hm_attach._engine = NoOcr()
+        try:
+            self.assertEqual(hm_attach.extract_bytes(png(48, 48), "facebook.png"), ("empty", ""))
+            self.assertEqual(hm_attach.extract_bytes(png(1, 1), "pixel.gif.png"), ("empty", ""))
+        finally:
+            hm_attach._engine = old
+
+    def test_same_attachment_reused_in_reply_and_forward(self):
+        """A PDF that comes again in a reply (YNT) and a forward (İLT) is read once (sha256 of the bytes): no second
+        extraction or OCR, and its chunk vectors are reused (the chunk text holds the subject without YNT/İLT and the
+        file name). The model encodes only the new body chunk of each mail."""
+        calls = []
+        real = hm_attach.extract_bytes
+        with unittest.mock.patch.object(hm_attach, "extract_bytes", lambda *a: calls.append(a[1]) or real(*a)):
+            stats = []
+            for eid, subject in (("A1", "Fatura TR4471"), ("A2", "YNT: Fatura TR4471"), ("A3", "İLT: Fatura TR4471")):
+                self.ingest(att_mail(eid, subject, ["Fatura_TR4471.pdf"], body="Dosya ektedir, %s." % eid))
+                states = [hm_index.apply_file(self.store, (r, i, n, k), (ATT / n).read_bytes())
+                          for r, _, i, n, k in self.store.pending_atts(["F1"])]
+                st = hm_index.embed_pending(self.store, lambda: self.enc, ["F1"], REV)
+                stats.append((states, st["model_chunks"], st["reused_chunks"]))
+        self.assertEqual(calls, ["Fatura_TR4471.pdf"])  # read once
+        self.assertEqual(stats, [(["ok"], 2, 0), (["cached"], 1, 1), (["cached"], 1, 1)])
 
     def test_ocr_types_only_on_windows(self):
         self.assertEqual(hm_attach.readable("foto.jpg"), sys.platform == "win32")
@@ -1183,6 +1256,63 @@ class ProtocolTests(unittest.TestCase):
                              (set(), 0, 0))
             self.assertFalse(ev[-1]["model_loaded"] or "model" in [e.get("phase") for e in ev])  # nothing to do: no model
             self.assertTrue(ev[-1]["coverage"]["complete"])
+
+    def test_query_vector_cache(self):
+        """Recent and saved searches (begin.keep_queries): the first search encodes the query and stores its vector
+        (qvecs, no query text in the file). The same search in a new process: no model load (the slow 2 s load does not
+        happen), the same final results, done.timing.query_cached. A search that is not in the list: the model, nothing
+        stored. A shorter list deletes the vector. Without keep_queries (older add-in): no read, no write."""
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            mails = [mail("E1", "Kargo faturası", "Eylül kargo faturası.", "2026-09-12T09:00:00"),
+                     mail("E2", "Sunucu bakımı", "Cumartesi bakım.", "2026-09-20T09:00:00")]
+            self.run_session(d, mails, "", mode="index")
+            q, keep = "zebra kargo faturası", ["zebra kargo faturası", "eski arama"]
+
+            def rows():  # the connection closes: Windows cannot delete an open file at the end of the test
+                db = sqlite3.connect(next(Path(d, "index").glob("*.sqlite")))
+                try:
+                    return db.execute("SELECT qkey, model_rev, length(vec) FROM qvecs").fetchall()
+                finally:
+                    db.close()
+            final = lambda ev: [(r["eid"], r["score"], r["confidence"]) for e in ev
+                                if e["ev"] == "results" and e["stage"] == "final" for r in e["results"]]
+            ev0, _, _ = self.run_session(d, mails, q)  # no keep_queries: no write
+            self.assertEqual((rows(), ev0[-1]["timing"]["query_cached"]), ([], False))
+            ev1, _, _ = self.run_session(d, mails, q, keep_queries=keep)
+            self.assertIn("model", [e.get("phase") for e in ev1])
+            self.assertEqual(len(rows()), 1)
+            self.assertEqual(rows()[0][1:], ("914f7f89142e33e77833254d9c9b90c3cef7303b", 512 * 4))
+            env = dict(os.environ, HM_SESSION="s" * 32, PYTHONIOENCODING="utf-8", HM_FAKE_LOAD_S="2")
+            p = subprocess.Popen([sys.executable, "-I", "-B", "-X", "utf8", str(WORKER / "hm_worker.py"), "--data", d,
+                                  "--model", "unused", "--fake-encoder"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8")
+            t0 = time.time()
+            ev2, _ = self.play(p, mails, q, keep_queries=keep)
+            self.close(p)
+            self.assertLess(time.time() - t0, 1.9)  # no 2 s model load
+            self.assertNotIn("model", [e.get("phase") for e in ev2])
+            self.assertEqual((ev2[-1]["status"], ev2[-1]["timing"]["query_cached"], ev2[-1]["model_loaded"]), ("ok", True, False))
+            self.assertTrue(final(ev2) and final(ev2) == final(ev1) == final(ev0))
+            self.assertTrue([e for e in ev2 if e["ev"] == "results" and e["stage"] == "final"][0]["semantic"])
+            data = b"".join(f.read_bytes() for f in Path(d, "index").iterdir())
+            self.assertNotIn("zebra".encode(), data)  # only a hash of the query
+            ev3, _, _ = self.run_session(d, mails, "cumartesi bakım", keep_queries=keep)  # not in the list
+            self.assertEqual((len(rows()), ev3[-1]["timing"]["query_cached"]), (1, False))
+            self.begin_status_once(d, keep_queries=["eski arama"])  # the search left the list: its vector goes
+            self.assertEqual(rows(), [])
+            for bad in ("x", [1], {"q": "x"}):
+                p = self.start(d)
+                ev = self.begin_status(p, keep_queries=bad)
+                self.close(p)
+                self.assertEqual((ev[-1]["status"], ev[-1]["detail"]), ("error", "bad keep_queries"))
+
+    def begin_status_once(self, d, **extra):
+        p = self.start(d)
+        ev = self.begin_status(p, **extra)
+        self.close(p)
+        self.assertEqual(ev[-1]["status"], "ok")
+        return ev
 
     def test_semantic_stage_before_embedding(self):
         """New mails without vectors: semantic results with the indexed mails come before the embedding, then the final

@@ -5,7 +5,8 @@
 HatırMail, Klasik Outlook için bir COM eklentisidir. Arama ve yapay zekâ kullanıcının kendi bilgisayarında, tek bir alt
 süreçte (worker) çalışır. Worker yalnız kullanıcı eylemiyle başlar: arama penceresini açmak, **Ara**,
 **İndekslemeyi başlat**, posta kutusu değiştirmek ya da **Durumu yenile**. Pencere açıkken model bellekte hazır kalır
-(ayar: **Yapay zekâyı hazır tut**, varsayılan 10 dk). Pencere kapanınca worker ve model de kapanır. Ortak sunucu yoktur.
+(ayar: **Yapay zekâyı hazır tut**, varsayılan 10 dk). Pencere kapandıktan sonra model en çok **Kapandıktan sonra**
+süresi kadar kalır (varsayılan 5 dk, 0–10); sonra worker ve model kapanır. Ortak sunucu yoktur.
 
 ```
 Outlook.exe (Klasik)
@@ -16,7 +17,7 @@ Outlook.exe (Klasik)
  python.exe hm_worker.py  (gömülü CPython 3.13.15, kurulum klasöründe)
       ├─ SQLite: FTS5 (kelime) + float16 vektörler (anlam), her posta kutusu için ayrı dosya
       └─ EmbeddingGemma 2, yalnız 270M metin bileşeni, ONNX Runtime, CPU, float32
-         (pencere kapanınca ya da ayarlanan süre işlem olmayınca süreç kapanır; ağırlıklar bellekte kalmaz)
+         (ayarlanan süre işlem olmayınca ya da pencere kapandıktan sonraki süre dolunca süreç kapanır)
 ```
 
 ## Doğrulanan ortam (2.19 test makinesi, salt okunur kontrol)
@@ -123,10 +124,20 @@ Outlook.exe (Klasik)
 - **Sınırlar:** ek başına 20 MB dosya ve 100.000 karakter metin, posta başına 300.000 karakter; PDF'te 50 sayfa,
   OCR için 3 sayfa; zip'te üye başına 20 MB ve toplam 100 MB. Küçük satır içi resimler (40 KB altı `image001.png` gibi
   logolar) okunmaz.
+- **Küçük resimde OCR yok (26 Ekim, kullanıcı isteği):** kısa kenarı 24 pikselden küçük ya da toplam 20.000 pikselden az
+  resim OCR'ye gönderilmez (`hm_attach.ocr_worth`): sosyal medya simgeleri, izleme pikselleri, imza logoları (~150×50 ile
+  200×80), satır içi küçük görseller. Boyut dosya başlığından okunur; sonuç `empty` olur ve SHA-256 ile saklanır, aynı
+  dosya bir daha denenmez. OCR motoru yalnız yeterince büyük bir resim için kurulur. Sınır: yalnız piksel sayısına
+  bakılır; kısa tek satırlık bir ekran kırpıntısı (400×30) da atlanır.
 - **İndeks:** `atts` (her ekin durumu), `att_texts` (dosya SHA-256'sı → metin; aynı dosya bir kez okunur, taşınan posta
   yeniden okunmaz), `fts_att` (ek metninin kelime dizini), `chunks.src` (0 = gövde, n = n. ek). Her ekin ilk 3 parçası
   anlam dizinine girer (posta başına en çok 12); metnin tamamı kelimeyle aranır. Silinen postanın ek metni oturum
   sonunda silinir.
+- **Aynı ek bir kez (26 Ekim'de denetlendi):** yanıtta (YNT/RE) ve iletmede (İLT/FW) gelen aynı dosya yeniden okunmaz ve
+  OCR'den geçmez (`att_texts`, SHA-256). Ek parçasının model metni konuyu YNT/İLT öneki olmadan ve dosya adını taşır;
+  bu yüzden aynı konulu yanıtta ekin vektörleri de yeniden kullanılır ve model yalnız yeni gövde parçasını kodlar (birim
+  testi `test_same_attachment_reused_in_reply_and_forward`). Konu ya da dosya adı başkaysa ekin vektörleri yeniden
+  hesaplanır (metin okunmaz).
 - **Çökme koruması:** okunan ek önce `extracting` yazılır. Worker o dosyada ölürse (bozuk dosya, bellek sınırı), sonraki
   arama eki `failed` yapar ve aynı dosyayı bir daha denemez.
 - **Sıralama:** ekteki BM25 sırası postanın kendi sırasının yarı ağırlığıyla eklenir (`0,5 × 0,5 / (10 + sıra)`);
@@ -227,16 +238,44 @@ Outlook.exe (Klasik)
   1,34); en yüksek bellek ~3.400 MB. **Durdur** sürmekte olan işlerin bitmesini bekler.
   Ayar **Yapay zekâyı hazır tut (dk)**: varsayılan 10, 0–120. 0 eski davranıştır: her iş kendi worker'ında, iş bitince
   süreç kapanır, ön yükleme yok. Süre son işten (ya da ön yüklemenin bitişinden) sayılır.
+- **Paketler token uzunluğuna göre (26 Ekim, kullanıcı isteği):** 64 parçalık her pencerede parçalar 8'lik paketlere
+  girmeden önce token sayısına göre sıralanır (önceden karakter sayısına göre). Model boş dolguyu da hesaplar; dolgu
+  payı azalır. Mac ölçümü (gerçek model, 4 çekirdek): uzun metinli indekste dolgu %15,3 → %6,4, hız saniyede 4,1–5,3 →
+  5,6–5,9 parça; eval indeksinde dolgu %19 → %11. Paketlerin karışımı değiştiği için yeni vektörlerin bir kısmı bir
+  float16 adımı (en çok 1,2e-4) farklıdır; 86 sorguda sıra ve güven etiketi değişmedi, en büyük puan farkı 4e-5. Var olan
+  vektörler yeniden hesaplanmaz. `done.stats.embed` gerçek ve dolgulu token sayısını verir.
+- **Pencere kapandıktan sonra model (26 Ekim, kullanıcı isteği):** ayar **Kapandıktan sonra (dk)** (`keep_after_close_min`,
+  0–10, varsayılan 5). Kullanıcı pencereyi kapatınca, hazır bekleyen bir worker varsa pencere kapanmaz, gizlenir: sürmekte
+  olan arama durur; sorgu, sonuçlar, filtreler ve açılmış ek kopyaları temizlenir; worker ve model bu süre kadar kalır.
+  Pencere bu sürede yeniden açılırsa (şerit düğmesi ya da Benzerlerini bul) açılış adımları aynı worker'la yapılır: model
+  hazırdır, yeniden yüklenmez. Süre dolunca worker ve gizli pencere kapanır. Outlook kapanması ve eklentinin
+  kaldırılması her şeyi hemen kapatır. 0: eski davranış. Sınır: pencere gizlenir; worker'ın sahibi değişmez.
+- **Sorgu vektörü önbelleği (26 Ekim, kullanıcı isteği):** son ve kayıtlı aramaların sorgu vektörleri indeks dosyasındaki
+  `qvecs` tablosunda durur (float32, sorgu başına 2 KB; anahtar sorgu metninin ve kodlayıcı ayarlarının SHA-256'sı,
+  metin saklanmaz). Eklenti her oturumda listeyi `begin.keep_queries` ile gönderir; listede olmayan vektörler silinir.
+  Bu aramalardan biri yeniden yapılınca worker modeli yüklemeden anlamsal sonuç verir. Mac ölçümü (gerçek model, 86
+  sorgu, her çalıştırma yeni süreç): son listeler 86/86 aynı (posta, puan, güven), ikinci çalıştırmada model yüklenmedi,
+  süre (ortanca) 0,71 → 0,09 sn. Vektör, aynı ayarlarla yeniden hesaplanan vektörle bayt bayt aynıdır; ONNX Runtime
+  sürümü ya da çekirdek sayısı değişince anahtar da değişir.
 - Aynı anda tek worker çalışır. Arama ve indeksleme birbirini dışlar: indeksleme sürerken **Ara**, onaydan sonra
   indekslemeyi durdurur ve aramayı başlatır. Durum okuması bir saniye kadar sürer; o sırada basılan **Ara** ve
   **İndekslemeyi başlat** onun bitişini bekler.
-- Worker şu durumlarda kapanır: pencere kapandı, Outlook kapandı ya da eklentiyi kaldırdı, hazır tutma süresi doldu,
+- Worker şu durumlarda kapanır: pencere kapandı (hazır worker yoksa ya da kapandıktan sonraki süre dolunca), Outlook
+  kapandı ya da eklentiyi kaldırdı, hazır tutma süresi doldu,
   **Durdur** (iptal), hata, eklenti sessiz kaldı (`idle_timeout_s`), aramanın süresi doldu (`session_timeout_s`), worker
   15 dakika hiç ileti göndermedi, stdin kapandı (Outlook çöktü), iş parçacığı ya da bellek ayarı değişti (bu değerler
   süreç başlarken verilir). Worker'ın kendi güvenlik sınırı: hazır tutma süresi + 10 dk içinde yeni iş gelmezse kendisi
   çıkar. Pencere indeksleme sürerken kapanırsa kullanıcıdan onay istenir.
 - Windows Job Object: `KILL_ON_JOB_CLOSE` (Outlook ölürse worker da ölür), süreç başına bellek sınırı (4 GB),
-  `ActiveProcessLimit=1` (worker başka süreç başlatamaz). Öncelik: BelowNormal. İş parçacığı: 4 (Ayarlar sekmesi).
+  `ActiveProcessLimit=1` (worker başka süreç başlatamaz). Öncelik: arama, durum ve benzer arama BelowNormal; tam
+  indeksleme ve Güncelle Idle (26 Ekim): Windows worker'a yalnız başka programın istemediği işlemci zamanını verir.
+  Hazır tutulan worker her oturumda o oturumun önceliğini alır. İş parçacığı: 4 (Ayarlar sekmesi).
+- **Pille duraklatma (26 Ekim, kullanıcı isteği):** ayar **Pille çalışırken indekslemeyi duraklat** (`pause_on_battery`,
+  varsayılan açık). Tam indeksleme ya da Güncelle sürerken ya da prize takılmayı beklerken eklenti 10 saniyede bir güç
+  durumunu okur (`SystemInformation.PowerStatus`; yalnız `Offline` pil sayılır, `Unknown` priz sayılır). Başka zaman
+  zamanlayıcı yoktur. Pil: iş Durdur yoluyla durur, yapılan iş kaydedilir. Priz: aynı iş kaldığı yerden yeniden başlar
+  (model yeniden yüklenir). Pille başlatılan iş prize takılınca başlar. Durdur beklemeyi iptal eder. Pencere ya da gizli
+  pencere kapanınca bekleme de biter. Bu, kullanıcının başlattığı işin devamıdır; yeni bir arka plan işi değildir.
 - Durdurulan indeksleme kaybolmaz: vektörler her model partisinde (8 parça) kaydedilir. Değişen ama henüz yeniden
   okunmayan posta eski metniyle aranabilir kalır ve "okunacak" olarak işaretlenir; sonraki tarama onu yeniden ister.
 - Eklenti postaları Outlook'un arayüz iş parçacığında okur ve her 100 ms'de bir pencere iletilerini işler. Böylece uzun
@@ -282,7 +321,9 @@ Outlook.exe (Klasik)
   dosyasına yazar (en çok 20 son arama ve adlandırılmış kayıtlı aramalar). Öneriler Windows'un otomatik tamamlama
   listesiyle gösterilir. Dosya yalnız eklentide okunur ve yazılır; worker ve protokol değişmez. **İndeksi sil** bu dosyayı
   silmez; `-KeepData` olmadan kaldırma siler. Okunamayan (kilitli) dosyanın üstüne yazılmaz; yazma hatasında pencere
-  dosyadaki durumu gösterir ve geçici kopya kalmaz.
+  dosyadaki durumu gösterir ve geçici kopya kalmaz. 26 Ekim'den beri eklenti bu listeyi her oturumda worker'a da gönderir
+  (`keep_queries`): worker bu aramaların sorgu vektörlerini indeks dosyasında tutar (`qvecs`; yalnız SHA-256 anahtarı ve
+  vektör, sorgu metni yok) ve listeden çıkan aramanın vektörünü siler. **İndeksi sil** bu vektörleri de siler.
 - Eklenti ile worker arasında soket yoktur. Oturum belirteci (`HM_SESSION`) ortam değişkeniyle verilir;
   worker eşleşmeyen `begin` mesajını reddeder ve hiçbir dosya yazmaz.
 
@@ -297,7 +338,9 @@ Outlook.exe (Klasik)
 oldu; gerçek kutuda süre henüz ölçülmedi. Arama artık bunu beklemez (süre sınırı); tam indeks İndeks sekmesinden bir kez yapılır | Daha hızlı CPU, daha çok çekirdek ya da daha küçük model |
 | İndeksleme yalnız Outlook açıkken çalışır | Postaları Outlook nesne modeli okur; Outlook kapanınca indeksleme durur (iş kaydedilir) | Arka plan hizmeti (kapsam dışı: yalnız kullanıcı eylemiyle çalışma kuralı) |
 | Kalan süre aşama başınadır | İndeks sekmesi o anki aşamanın (okuma, ek, anlam) kalan süresini gösterir, toplamı göstermez | Aşama hızlarını kaydedip toplam tahmin |
-| Hazır model bellekte yer tutar | Pencere açıkken worker ~1–1,5 GB bellek kullanır | Ayarlar: hazır tutma süresini kısaltın ya da 0 yapın |
+| Hazır model bellekte yer tutar | Pencere açıkken ve kapandıktan sonra en çok 10 dk worker ~1–1,5 GB bellek kullanır | Ayarlar: hazır tutma sürelerini kısaltın ya da 0 yapın |
+| Pille duraklatma güç durumuna bağlı | Güç durumunu "bilinmiyor" bildiren bilgisayarda indeksleme duraklamaz; duraklatma durdurup yeniden başlatmadır (model yeniden yüklenir) | Worker'a bir `pause` işlemi |
+| Küçük resim kuralı yalnız boyuta bakar | Kısa tek satırlık bir ekran kırpıntısı (ör. 400×30) OCR'den geçmez; 300×100 ve büyük logolar dosya başına bir kez OCR'den geçer | Ayarlanabilir sınır ya da resim analizi |
 | Vektör araması kaba kuvvet (tüm vektörler bellekte) | 100.000 parça için ~200 MB, birkaç yüz ms | ANN dizini (ör. HNSW) |
 | Güncelle, hiç tam indekslenmemiş klasördeki yeni postayı okumaz | Bu postalar sayılır; durum metni İndekslemeyi başlat'ı önerir | Klasör başına son okunan değişiklik zamanı (PST taşımasında davranış doğrulandıktan sonra) |
 | Filtreli kelime araması dosyanın en iyi 400 sonucuyla sınırlı | Çok yaygın bir sözcükte, filtredeki bir posta yalnız anlamıyla bulunabilir | FTS sorgusuna rowid kümesi koşulu |
