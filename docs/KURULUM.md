@@ -13,7 +13,7 @@ Yapay zekâ modeli yalnız sizin bilgisayarınızda çalışır. Postalarınız 
 | .NET Framework | 4.8 (Windows 10/11 ile gelir) |
 | Visual C++ çalışma kitaplığı | Microsoft Visual C++ 2015–2022 Redistributable (x64). Yapay zekâ kitaplığı (ONNX Runtime) bunu ister; çoğu Windows'ta yüklüdür. Test makinesinde 14.42 sürümü vardı. |
 | Disk | Kurulum için yaklaşık 1,8 GB (paket 544 MB + kurulum klasörü 1,25 GB). İndeks: 316 sentetik posta için 1,1 MB ölçüldü; gerçek postalar daha uzun olduğu için 10.000 posta başına 40–80 MB tahmin edilir. |
-| Bellek | Pencere açıkken arama işlemi yaklaşık 0,7 GB, indeksleme sırasında en çok yaklaşık 1,3 GB kullanır (2.19 ölçümü). Pencere kapanınca ya da "Yapay zekâyı hazır tut" süresi dolunca bu bellek boşalır |
+| Bellek | Pencere açıkken arama işlemi yaklaşık 0,7 GB, indeksleme sırasında 4 çekirdekte en çok yaklaşık 2,4 GB, 16 çekirdekte yaklaşık 3,4 GB kullanır (2.19 ölçümü). Pencere kapanınca ya da "Yapay zekâyı hazır tut" süresi dolunca bu bellek boşalır |
 | Yetki | Yönetici yetkisi gerekmez. Kurulum yalnız sizin kullanıcı hesabınızı etkiler. |
 
 ## Kurulum (kurulum programıyla, önerilen yol)

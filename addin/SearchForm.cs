@@ -332,7 +332,7 @@ namespace HatirMail
             SettingRow(sgrid, 0, "İşlemci çekirdeği:", numThreads, string.Format(TR,
                 "1–16. Bu bilgisayarda {0} mantıksal çekirdek var. Çok çekirdek indekslemeyi hızlandırır ama Outlook'u yavaşlatabilir.",
                 Environment.ProcessorCount));
-            SettingRow(sgrid, 1, "Bellek sınırı (MB):", numMemory, "Arama işlemi bu sınırı aşarsa kapatılır. Yapay zekâ modeliyle indeksleme en çok yaklaşık 1.300 MB kullanır.");
+            SettingRow(sgrid, 1, "Bellek sınırı (MB):", numMemory, "Arama işlemi bu sınırı aşarsa kapatılır. Yapay zekâ modeliyle indeksleme 4 çekirdekte en çok yaklaşık 2.400 MB, 16 çekirdekte yaklaşık 3.400 MB kullanır.");
             SettingRow(sgrid, 2, "Aramada indeksleme (sn):", numBudget,
                 "Ara'ya bastığınızda yeni postaları indekslemek için en çok bu kadar beklenir; kalan iş sonraki aramaya ya da İndeks sekmesine kalır. 0: aramada indeksleme yok.");
             SettingRow(sgrid, 3, "Yapay zekâyı hazır tut (dk):", numKeep,
