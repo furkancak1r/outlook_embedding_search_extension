@@ -82,6 +82,9 @@ index file does not change (SQLite triggers count every change of mails, chunks 
 search session the keyword, semantic and final stage compute the query words, the query vector and the word hits of a
 mail text once. The results are the same as with a new query.
 
+Index file: since 10-26, the worker adds the index `items_cov` (folder, embedded, last_mod) to an existing file at its
+first open (one read of the items table). This is an additive change: an older worker opens the file and ignores it.
+
 The session token (`HM_SESSION`) is the same for all sessions of one process.
 
 `index_budget_s` (search only): seconds of indexing work after the read phase starts. The add-in stops reading new

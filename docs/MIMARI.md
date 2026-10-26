@@ -215,6 +215,11 @@ Outlook.exe (Klasik)
   ve bir posta metnindeki kelime eşleşmelerini bir kez hesaplar. Kelime kapsamı (sorgu kelimelerinin postada geçip
   geçmediği) yalnız ilk sonuçlara girebilecek adaylar için hesaplanır: adaylar, kapsam tam sayılınca alacakları puana
   göre sıralanır; bu puan sıradaki sonucun puanının altına düşünce okuma durur. Sonuçlar tüm adayları okumakla aynıdır.
+- **Yazım hatası taraması ve kapsam dizini (26 Ekim):** sözlükte olmayan bir sorgu sözcüğü için önek denetimi sıralı
+  sözlükte ikili aramayla yapılır. Yazım hatası taraması yalnız sözcüğün ilk ya da ikinci harfini tutan terim
+  aralıklarına bakar (önceki tam taramanın süzgeci de yalnız bunları kabul ediyordu). Sonuç tam taramayla aynıdır.
+  İndeks dosyasındaki `items_cov` dizini (klasör, anlam durumu, okuma durumu) kapsam ve bekleyen iş sorgularının uzun
+  posta satırlarını okumasını önler. Eski bir dosya bu dizini ilk açılışta bir kez alır.
   Ayar **Yapay zekâyı hazır tut (dk)**: varsayılan 10, 0–120. 0 eski davranıştır: her iş kendi worker'ında, iş bitince
   süreç kapanır, ön yükleme yok. Süre son işten (ya da ön yüklemenin bitişinden) sayılır.
 - Aynı anda tek worker çalışır. Arama ve indeksleme birbirini dışlar: indeksleme sürerken **Ara**, onaydan sonra
@@ -294,7 +299,7 @@ oldu; gerçek kutuda süre henüz ölçülmedi. Arama artık bunu beklemez (sür
 | Filtre listeleri indeks değişince bütün postaları tarar | 100.000 postada ~0,2 sn; değişiklik yoksa hazır worker listeyi bellekten verir | Kişiler tablosu |
 | Benzerlik eşikleri kalibre edilmedi | Yalnız sentetik 32 aileyle ölçüldü | Gerçek kutudan etiketli örneklerle kalibrasyon |
 | Sağ tık menüsü SSH ile sınanamaz | `Context` nesnesinin `Selection` olduğu bir topluluk yanıtına dayanır; yedek yol (doğrudan öğe) ve OlbCheck üyeleri vardır | Kullanıcı kabul adımı (`docs/KURULUM.md`) |
-| Yazım hatası genişletmesi sözlükte doğrusal tarama | ~10^5 terimde birkaç yüz ms | Sözlük üzerinde trigram FTS |
+| Yazım hatası genişletmesi büyük sözlükte yavaşlar | Yalnız ilk ya da ikinci harfi tutan terimler taranır; 400 bin terimde yazım hatalı sorgu başına ~77 ms (Mac; 2.19'da birkaç kat yavaş) | Sözlük üzerinde trigram FTS |
 | Alıntı/imza ayıklama sezgiseldir | Alışılmadık biçimler ana metinde kalabilir | Daha çok kalıp |
 | Yeni Outlook desteklenmez | Yalnız Klasik Outlook | Bölüm 2'deki Graph + köprü yolu |
 | Gerçek Outlook arayüz testi yapılmadı | SSH oturumu (Session 0) masaüstü arayüzü açamaz | Kullanıcı makinesinde el ile kabul testi (`docs/KURULUM.md`) |

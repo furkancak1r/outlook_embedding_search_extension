@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from datetime import datetime
 from pathlib import Path
 
@@ -232,6 +233,96 @@ class StoreSearchTests(unittest.TestCase):
                 self.assertEqual("zeplin" in s.vocab(), "zeplin" in fresh(s))
             c.close()
         a.close(), b.close()
+
+    def test_typo_scan_same_as_full_scan(self):
+        """The prefix check and the typo scan on ranges of the sorted terms give what a check of every term gives: words
+        of the vocabulary with 1-2 edits, random strings, digits, Turkish and other letters, 2-3 char words, an empty
+        term and terms with a digit or a non-ASCII first char in the vocabulary. (query_groups gives 4+ chars; with 1
+        char the old scan failed on the empty term.)"""
+        import random
+
+        def full_fuzzy(tok, vocab, limit=6):  # the scan before 10-26
+            k = 1 if len(tok) < 8 else 2
+            out = [(df, term) for term, df in vocab.items()
+                   if not (abs(len(term) - len(tok)) > k or term.isdigit() or term[0] != tok[0] and term[1:2] != tok[1:2])
+                   and hm_search.edit_distance_le(tok, term, k)]
+            return [t for _, t in sorted(out, reverse=True)[:limit]]
+
+        rnd = random.Random(11)
+        alpha = "abcçdefgğhıijklmnoöprsştuüvyz0123456789-é"
+        vocab = dict(self.store.vocab())
+        for _ in range(3000):
+            vocab["".join(rnd.choice(alpha) for _ in range(rnd.randint(1, 12)))] = rnd.randint(1, 50)
+        vocab.update({"": 1, "9kargo": 2, "çarşamba": 3, "ömür": 4, "ıslak": 5})
+        terms = sorted(vocab)
+        words = list(vocab)
+        sample = [w[:rnd.randint(2, 3)] for w in rnd.sample(words, 80) if len(w) >= 2]
+        for _ in range(600):
+            w = list(rnd.choice(words) or "a")
+            for _ in range(rnd.randint(1, 2)):
+                p = rnd.randrange(len(w) + 1)
+                if rnd.random() < 0.4 or p == len(w):
+                    w.insert(p, rnd.choice(alpha))
+                elif rnd.random() < 0.5:
+                    w[p] = rnd.choice(alpha)
+                elif len(w) > 1:
+                    del w[p]
+            sample.append("".join(w))
+        sample += ["".join(rnd.choice(alpha) for _ in range(rnd.randint(2, 12))) for _ in range(200)]
+        for w in (w for w in sample if len(w) >= 2):
+            self.assertEqual(hm_search.fuzzy(w, vocab, terms), full_fuzzy(w, vocab), w)
+            s = hm_search.stem(w)
+            self.assertEqual(hm_search._prefix_known(s, terms), len(s) >= 4 and any(t.startswith(s) for t in vocab), w)
+        # The whole query: the same groups as the code before 10-26 (prefix check and typo scan over every term). The
+        # scan must go to the end of the sorted list ("z..." and "ü..." are the last terms; fold() makes ü in a query u).
+        vocab.update({"zeytin": 6, "zeytinlik": 2, "uretim": 7, "uretici": 3, "üzüm": 2})
+        old_prefix = lambda s, terms: len(s) >= 4 and any(term.startswith(s) for term in vocab)
+        with unittest.mock.patch.object(hm_search, "_prefix_known", old_prefix), \
+                unittest.mock.patch.object(hm_search, "fuzzy", lambda tok, v, terms: full_fuzzy(tok, v)):
+            old = [hm_search.query_groups(q, vocab) for q in sample + ["zeytinn üretimm", "kargo faturasi zeytn"]]
+        new = [hm_search.query_groups(q, vocab) for q in sample + ["zeytinn üretimm", "kargo faturasi zeytn"]]
+        self.assertEqual(new, old)
+        self.assertIn(("zeytin", False), new[-2][0][1])
+        self.assertIn(("uretim", False), new[-2][1][1])
+        self.assertIn(("zeytin", False), new[-1][2][1])
+
+    def test_covering_index_and_stable_orders(self):
+        """items_cov: an old file gets it at the next open; coverage() and pending() give the same values and order as
+        without it. best_per_item: with equal cosines of one mail, the lowest seq wins in every row order."""
+        import numpy as np
+        fs = ["F1"]
+        with self.store.tx():
+            for i in range(6):  # the same date: pending() orders them by rowid
+                hm_index.ingest(self.store, mail("P%d" % i, "Paket %d" % i, "Paket teslim.", "2026-09-01T09:00:00"), 2, REV)
+        before = (self.store.coverage(fs), self.store.pending(fs))
+        self.assertEqual([r[1] for r in before[1]], ["Paket %d" % i for i in range(6)])
+        import sqlite3
+
+        def plan():  # a new connection: a cached EXPLAIN statement keeps its old plan after a schema change
+            c = sqlite3.connect(self.store.path)
+            try:
+                return " ".join(r[3] for r in c.execute(
+                    "EXPLAIN QUERY PLAN SELECT folder_id, count(*), sum(last_mod IS NOT NULL), sum(embedded) FROM items"
+                    " WHERE folder_id IN (?) GROUP BY folder_id", fs))
+            finally:
+                c.close()
+        self.assertIn("COVERING INDEX items_cov", plan())
+        self.store.db.execute("DROP INDEX items_cov")  # a file from before 10-26
+        self.assertNotIn("items_cov", plan())
+        self.assertEqual((self.store.coverage(fs), self.store.pending(fs)), before)
+        self.store.close()
+        self.store = Store(self.store.path, REV)  # the next session creates the index (no statistics yet)
+        has = "SELECT count(*) FROM sqlite_master WHERE name='items_cov'"
+        self.assertEqual(self.store.db.execute(has).fetchone()[0], 1)
+        self.assertEqual((self.store.coverage(fs), self.store.pending(fs)), before)
+        self.store.close()  # PRAGMA optimize analyzes the new index: from the next session on, the planner uses it
+        self.store = Store(self.store.path, REV)
+        self.assertIn("COVERING INDEX items_cov", plan())
+        self.assertEqual((self.store.coverage(fs), self.store.pending(fs)), before)
+        ids, seq, sims = np.array([7, 7, 7, 3]), np.array([0, 1, 2, 0], np.int32), np.array([0.5, 0.9, 0.9, 0.1], np.float32)
+        for p in ([0, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1]):
+            got = hm_search.best_per_item(ids[p], seq[p], sims[p])
+            self.assertEqual((got[0].tolist(), got[2].tolist()), ([3, 7], [0, 1]), p)
 
     def test_session_memo_and_lazy_coverage(self):
         """run() with one memo for the keyword and the final stage gives the same results as run() without it, also

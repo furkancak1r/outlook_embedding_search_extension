@@ -1,4 +1,5 @@
 """Hybrid search: FTS5 keyword (Turkish folding, light stemming, typo expansion) + vector cosine + soft date boost."""
+import bisect
 import re
 from datetime import datetime
 
@@ -62,30 +63,42 @@ def edit_distance_le(a, b, k):
     return prev[-1] <= k
 
 
-def fuzzy(tok, vocab, limit=6):
-    """Vocabulary terms within edit distance 1 (len < 8) or 2 (len >= 8), most frequent first.
-
-    ponytail: linear scan over the FTS vocabulary; fine up to ~10^5 terms (a few 100 ms).
-    Upgrade path: a trigram FTS table over the vocabulary.
-    """
+def fuzzy(tok, vocab, terms, limit=6):
+    """Vocabulary terms within edit distance 1 (len < 8) or 2 (len >= 8), most frequent first. terms: sorted(vocab).
+    The filter below keeps only terms with the first or the second char of tok. These terms are ranges of the sorted
+    list: per first char c, the terms that start with c (c = tok[0]) or with c + tok[1]. 10-26 probe: the same output as
+    a scan of all terms; per query with a typo 20 -> 14 ms (67K terms), 145 -> 77 ms (400K terms), Mac.
+    ponytail: the ranges still hold many terms in a large vocabulary. Upgrade path: a trigram FTS table over it."""
     k = 1 if len(tok) < 8 else 2
     out = []
-    for term, df in vocab.items():
-        if abs(len(term) - len(tok)) > k or term.isdigit() or term[0] != tok[0] and term[1:2] != tok[1:2]:
-            continue
-        if edit_distance_le(tok, term, k):
-            out.append((df, term))
+    i = bisect.bisect_right(terms, "")  # an empty term has no first char (and the length filter skips it)
+    while i < len(terms):
+        c = terms[i][0]
+        prefix = c if c == tok[0] else c + tok[1:2]
+        j = bisect.bisect_left(terms, prefix, lo=i)
+        while j < len(terms) and terms[j].startswith(prefix):
+            term = terms[j]
+            j += 1
+            if abs(len(term) - len(tok)) > k or term.isdigit() or term[0] != tok[0] and term[1:2] != tok[1:2]:
+                continue
+            if edit_distance_le(tok, term, k):
+                out.append((vocab[term], term))
+        i = bisect.bisect_right(terms, c, lo=i, key=lambda x: x[0])  # the next first char
     return [t for _, t in sorted(out, reverse=True)[:limit]]
 
 
-def _known(t, s, vocab):
-    return t in vocab or (len(s) >= 4 and any(term.startswith(s) for term in vocab))
+def _prefix_known(s, terms):
+    """True when a term starts with s (len >= 4). terms: sorted. The first term >= s is such a term if there is one."""
+    if len(s) < 4:
+        return False
+    i = bisect.bisect_left(terms, s)
+    return i < len(terms) and terms[i].startswith(s)
 
 
 def query_groups(text, vocab):
     """[(token, [(term, is_prefix)])] for the keyword part of the query. One group per query word."""
     text = re.sub(r"(\w)['’](\w+)", r"\1", text)  # Ahmet'ten -> Ahmet, Sarah's -> Sarah
-    groups, seen = [], set()
+    groups, seen, terms = [], set(), None
     for t in tokens(fold(text)):
         if t in STOP or t in seen or len(t) < 2:
             continue
@@ -97,9 +110,13 @@ def query_groups(text, vocab):
                 variants.add((s, True))
             for syn in SYNONYMS.get(t, []):
                 variants.add((syn, False))
-            if len(t) >= 4 and not _known(t, s, vocab):
-                for f in fuzzy(t, vocab):
-                    variants.add((f, False))
+            if len(t) >= 4 and t not in vocab:
+                # Only for a word that is not in the vocabulary. fts_vocab gives the terms in this order: the sort only
+                # checks it (10-26: 0.5 ms for 67K terms, Mac).
+                terms = sorted(vocab) if terms is None else terms
+                if not _prefix_known(s, terms):
+                    for f in fuzzy(t, vocab, terms):
+                        variants.add((f, False))
         groups.append((t, sorted(variants)))
     return groups
 
@@ -406,8 +423,9 @@ def similar(store, eid, folder_ids, model_rev, dim=512, top_k=10, allow=None):
 
 
 def best_per_item(ids, seq, sims):
-    """(mail rowids, best cosine, seq of the best chunk): one entry per mail, from chunk-level rows."""
-    order = np.lexsort((-sims, ids))
+    """(mail rowids, best cosine, seq of the best chunk): one entry per mail, from chunk-level rows. Equal cosines of
+    one mail (the same chunk text twice): the lowest seq, so the row order of the SQL query has no effect."""
+    order = np.lexsort((seq, -sims, ids))
     first = np.ones(len(order), bool)
     first[1:] = ids[order][1:] != ids[order][:-1]
     best = order[first]

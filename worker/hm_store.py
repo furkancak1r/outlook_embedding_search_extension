@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS items(
   model_rev TEXT, index_version INTEGER, seen_gen INTEGER DEFAULT 0, added_gen INTEGER NOT NULL DEFAULT 0);
 -- items.seen_gen: written, not read since 2026-10-23 (Store.sweep keeps the seen rows in memory). Kept for old files.
 CREATE INDEX IF NOT EXISTS items_folder ON items(folder_id, seen_gen);
+-- items_cov: coverage(), missing_vectors() and pending() find these columns in the index, not in the long rows
+-- (embedded comes after main_text). 10-26 probe, 3,456 long mails: coverage 1.99 -> 0.24 ms per call, the same rows. An
+-- old file gets the index at its first open (one read of the items table); PRAGMA optimize at close analyzes it.
+CREATE INDEX IF NOT EXISTS items_cov ON items(folder_id, embedded, last_mod);
 CREATE TABLE IF NOT EXISTS chunks(
   id INTEGER PRIMARY KEY, item_rowid INTEGER NOT NULL, seq INTEGER, start INTEGER, end INTEGER, text_hash TEXT,
   src INTEGER NOT NULL DEFAULT 0);
@@ -294,11 +298,12 @@ class Store:
 
     # -- embeddings ---------------------------------------------------------------------------
     def pending(self, folder_ids, since=None):
-        """Mails without all their vectors, newest first. since: only the delta (DELTA)."""
+        """Mails without all their vectors, newest first, then by rowid (the same order with every query plan). since:
+        only the delta (DELTA)."""
         delta, args = (" AND " + DELTA, [since]) if since is not None else ("", [])
         return self.db.execute(
             f"SELECT rowid, subject, sender, attachments, main_text FROM items i WHERE embedded=0"
-            f" AND folder_id IN ({_in(len(folder_ids))}){delta} ORDER BY sent_at DESC", [*folder_ids, *args]).fetchall()
+            f" AND folder_id IN ({_in(len(folder_ids))}){delta} ORDER BY sent_at DESC, rowid", [*folder_ids, *args]).fetchall()
 
     def missing_vectors(self, folder_ids, model_rev):
         """True when a not-embedded mail of the scope has a chunk without a vector: embed_pending has model work."""
