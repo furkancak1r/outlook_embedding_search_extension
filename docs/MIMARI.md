@@ -189,6 +189,31 @@ Outlook.exe (Klasik)
   sonucun 0,98'i aynı ailedendir. "Yüksek" etiketli 190 sonucun 172'si (0,905) aynı ailedendir. Kaynak posta hiçbir
   sonuçta yoktur.
 
+### 4c. Erişilebilirlik (26 Ekim, kullanıcı isteği)
+
+- **Ad ve açıklama:** her etkileşimli kontrolün Türkçe `AccessibleName` ve `AccessibleDescription` değeri vardır.
+  Düğmelerin adı metninden üretilir (`&` ve `▼` olmadan); açıklama, ne yaptığını ve erişim tuşunu söyler.
+- **Sonuç satırı tek cümle:** NVDA çok sütunlu bir liste satırının adını sütun metinlerinden kurar ve satırın kendi
+  `accName` değerini kullanmaz (nvaccess/nvda, `NVDAObjects/IAccessible/sysListView32.py`, `ListItem._get_name`). Bu
+  yüzden satırın yerel metni (sütun 0) cümledir, diğer sütunlar boştur; görünen hücreleri liste kendisi çizer
+  (`OwnerDraw`, sonuçtaki `cells` dizisinden). Sıralama ve önizleme de `cells` dizisini okur. Cümle: `RowText.Sentence`.
+- **Renkler:** yalnız `SystemColors`. Başlık bandı ve ana düğmeler Highlight, işaretler Info rengindedir. Yüksek karşıtlık
+  her kullanımda `SystemInformation.HighContrast` ile okunur; Windows tema değişince `WM_SYSCOLORCHANGE` gönderir ve
+  pencere renkleri yeniden uygular (`OnSystemColorsChanged`). Bir durumu yalnız renk göstermez (eksik indeks: kalın).
+- **Odak:** sekme sırası her kapsayıcıda ekrandaki sıradır (`Order`). Odak çerçevesi ayrı bir denetimdir (Highlight,
+  `S(3)`, içi boş bölge, fare tıklamaları geçer); etkin kontrol değişince (`UpdateDefaultButton`) yeniden konumlanır.
+- **Klavye:** kısayollar `ProcessCmdKey` ile, sekme erişim tuşları `ProcessMnemonic` ile işlenir (TabControl `&`
+  işaretini metin olarak gösterir). Outlook ileti döngüsünde WinForms ön işlemesi Tab ile aynı yoldur; kullanıcı Tab'ın
+  Outlook'ta çalıştığını gördü (26 Ekim). Yedek yollar: `KeyPreview` (tuş iletisi pencereye ulaşırsa) ve
+  `WM_SYSCOMMAND SC_KEYMENU` (Alt+harf). F1 listesi kısayol tablosundan ve kontrollerdeki `&` harflerinden üretilir.
+- **Ölçek:** `S()` ve yazı tipleri DPI × yazı büyüklüğü ile çarpılır. Yazı büyüklüğü değişince ya da pencere farklı DPI'lı
+  bir monitöre geçince (`WM_DPICHANGED`) `ApplyScale` yazı tiplerini, `Control.Scale` ile sınırları, kenar boşluklarını ve
+  sütun genişliklerini ölçekler, sonra metne bağlı ölçüleri (`Measure`) yeniden hesaplar. Sekme sayfaları en küçük pencere
+  boyunun altında kaydırılır.
+- **DPI bağlamı:** Office şerit geri çağrılarını sistem DPI bağlamında çağırır (learn.microsoft.com, "Handle high DPI
+  and DPI scaling in your Office solution"). `Connect.ShowForm` pencereyi `Native.DpiScope` içinde (monitör başına v1,
+  Outlook ile aynı) oluşturur ve eski bağlamı geri yükler. v1'de başlık çubuğu başka monitörde ölçeklenmez.
+
 ### 5. Süreç yaşam döngüsü ve kaynak sınırları
 
 - Outlook açılırken model yüklenmez, alt süreç başlamaz, zamanlayıcı ya da yoklama (polling) yoktur. Arka planda
@@ -307,4 +332,6 @@ oldu; gerçek kutuda süre henüz ölçülmedi. Arama artık bunu beklemez (sür
 | Yazım hatası genişletmesi büyük sözlükte yavaşlar | Yalnız ilk ya da ikinci harfi tutan terimler taranır; 400 bin terimde yazım hatalı sorgu başına ~77 ms (Mac; 2.19'da birkaç kat yavaş) | Sözlük üzerinde trigram FTS |
 | Alıntı/imza ayıklama sezgiseldir | Alışılmadık biçimler ana metinde kalabilir | Daha çok kalıp |
 | Yeni Outlook desteklenmez | Yalnız Klasik Outlook | Bölüm 2'deki Graph + köprü yolu |
+| Erişilebilirlik gerçek ekran okuyucu ve gerçek tema ile sınanmadı | TestHost MSAA adlarını, renkleri, odak çerçevesini ve yüksek karşıtlık benzetimini denetler; NVDA/Ekran Okuyucusu, gerçek tema geçişi ve ikinci monitör SSH'den sınanamaz | Kullanıcı kabul adımı (`docs/KURULUM.md`, "Erişilebilirlik ve klavye") |
+| Açık bir diyalog DPI değişince ölçeklenmez | Kaydetme ve klasör seçme pencereleri açıldıkları ölçekte kalır | Diyaloglarda da `WM_DPICHANGED` |
 | Gerçek Outlook arayüz testi yapılmadı | SSH oturumu (Session 0) masaüstü arayüzü açamaz | Kullanıcı makinesinde el ile kabul testi (`docs/KURULUM.md`) |

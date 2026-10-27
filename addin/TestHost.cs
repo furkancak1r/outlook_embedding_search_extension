@@ -24,6 +24,7 @@
 //        HatirMail.TestHost.exe <att_corpus.json> <hatirmail_home> --attach-check   ("Eki aç" file rules, no window: runs on mono)
 //        HatirMail.TestHost.exe - <hatirmail_home> --exclude-check   ("Klasörleri hariç tut" rules, no window: runs on mono)
 //        HatirMail.TestHost.exe - <hatirmail_home> --ribbon-check    ("Benzerlerini bul" menu XML and mail reference, no window: runs on mono)
+//        HatirMail.TestHost.exe - <hatirmail_home> --row-text-check  (the one-sentence text of a result row, no window: runs on mono)
 //        HatirMail.TestHost.exe <corpus.json> <hatirmail_home> --similar EID EXPECTED_EID
 //                             full index, then "Benzerlerini bul" on EID: no model load, EXPECTED_EID first and "yüksek", EID not
 //                             in the results; then the same with the Gönderen filter of EID (only that sender)
@@ -75,6 +76,7 @@ namespace HatirMail
             if (args[2] == "--attach-check") return AttachCheck(args[0], settings) ? 0 : 1;
             if (args[2] == "--exclude-check") return ExcludeCheck(settings) ? 0 : 1;
             if (args[2] == "--ribbon-check") return RibbonCheck() ? 0 : 1;
+            if (args[2] == "--row-text-check") return RowTextCheck() ? 0 : 1;
             if (args[2] == "--similar") return SimilarRun(new JsonSource(args[0]), settings, args[3], args[4]);
             if (args[2] == "--layout-check") return LayoutCheck(new JsonSource(args[0]), settings, args.Length > 3 ? args[3] : null);
             string expected = args.Length > 3 && !args[3].StartsWith("--") ? args[3] : null;
@@ -457,7 +459,10 @@ namespace HatirMail
             int code = 1;
             form.Shown += (s, e) =>
             {
-                bool ok = true;
+                // The window opens with the focus in the search box (before any check moves it).
+                bool focusOpen = form.Active == form.QueryBox;
+                Console.WriteLine("key_focus_open -> " + (focusOpen ? "ok" : "FAIL"));
+                bool ok = focusOpen;
                 // Fake worker events with realistic sizes (no worker in this check).
                 form.Feed("index", Coverage(form));
                 form.Feed("index", new Dictionary<string, object> { {"ev", "progress"}, {"phase", "embed"}, {"done", 1234}, {"total", 4321}, {"rate", 0.6}, {"eta_s", 5148} });
@@ -478,6 +483,7 @@ namespace HatirMail
                         form.ShowTab(tab); root.PerformLayout(); Application.DoEvents();
                         string name = (size == form.DesignClientSize ? "default" : "min") + "-" + new[] { "ara", "indeks", "ayarlar" }[tab];
                         ok &= Check(root, name);
+                        ok &= A11yCheck(root, name);
                         if (tab == 0) ok &= FilterGrid(form, name);
                         if (shotDir != null) Shot(root, Path.Combine(shotDir, "ui-" + name + ".png"));
                     }
@@ -507,6 +513,13 @@ namespace HatirMail
                 ok &= HistoryUiCheck(form, settings, shotDir);
                 ok &= IndexDeleteCheck(form, settings); // it clears the results
                 ok &= ExcludeUiCheck(form, settings, src.Stores()[0].Key, shotDir);
+                // Accessibility (the 7 features of 10-26): MSAA names, rows, high contrast, focus frame, keys, text size, DPI.
+                form.Feed("search", Results());
+                ok &= MsaaCheck(form);
+                ok &= ColorRowRingCheck(form, shotDir);
+                ok &= KeyCheck(form, (JsonSource)src, shotDir);
+                ok &= ScaleCheck(form, settings, shotDir);
+                ok &= DpiCheck(form, shotDir);
                 Console.WriteLine(ok ? "PASS" : "FAIL");
                 code = ok ? 0 : 1;
                 form.Shutdown();
@@ -523,30 +536,34 @@ namespace HatirMail
             if (File.Exists(settings.ConfigFile)) File.Delete(settings.ConfigFile);
             var all = SearchForm.AllControls(form).ToList();
             Func<string, NumericUpDown> num = n => all.OfType<NumericUpDown>().First(x => x.AccessibleName == n);
-            var att = all.OfType<CheckBox>().First(x => x.Text.StartsWith("Ek dosyalarının"));
+            var att = all.OfType<CheckBox>().First(x => x.AccessibleName == "Ek dosyalarının içinde de ara");
             var save = all.OfType<Button>().First(x => x.Text == "&Kaydet");
             bool ok = true;
-            foreach (var v in new[] { new { T = 6, M = 6144, B = 45, A = false, K = 30 }, new { T = 2, M = 3072, B = 0, A = true, K = 0 } })
+            var first = all.OfType<CheckBox>().First(x => x.AccessibleName == "Arama bitince ilk sonuca geç");
+            foreach (var v in new[] { new { T = 6, M = 6144, B = 45, A = false, K = 30, F = true }, new { T = 2, M = 3072, B = 0, A = true, K = 0, F = false } })
             {
                 num("İşlemci çekirdeği").Value = v.T; num("Bellek sınırı (MB)").Value = v.M; num("Aramada indeksleme (sn)").Value = v.B;
                 num("Yapay zekâyı hazır tut (dk)").Value = v.K;
-                att.Checked = v.A;
+                att.Checked = v.A; first.Checked = v.F;
                 save.PerformClick();
                 var r = Settings.Load();
                 bool same = r.Threads == v.T && r.MemoryLimitMb == v.M && r.SearchIndexBudgetS == v.B && r.Attachments == v.A &&
-                            r.KeepAliveMin == v.K && form.StatusText.StartsWith("Ayarlar kaydedildi");
-                Console.WriteLine("settings_save threads={0} memory={1} budget={2} attachments={3} keep_alive_min={4} -> {5}", r.Threads, r.MemoryLimitMb,
-                                  r.SearchIndexBudgetS, r.Attachments, r.KeepAliveMin, same ? "ok" : "FAIL");
+                            r.KeepAliveMin == v.K && r.FocusFirstResult == v.F && r.TextScalePct == 100 && form.StatusText.StartsWith("Ayarlar kaydedildi");
+                Console.WriteLine("settings_save threads={0} memory={1} budget={2} attachments={3} keep_alive_min={4} first_result={5} text={6} -> {7}", r.Threads,
+                                  r.MemoryLimitMb, r.SearchIndexBudgetS, r.Attachments, r.KeepAliveMin, r.FocusFirstResult, r.TextScalePct, same ? "ok" : "FAIL");
                 ok &= same;
             }
-            File.WriteAllText(settings.ConfigFile, "{\"threads\": 99, \"memory_limit_mb\": 10, \"search_index_budget_s\": -5, \"embed_budget_s\": 7, \"keep_alive_min\": 999}");
+            File.WriteAllText(settings.ConfigFile, "{\"threads\": 99, \"memory_limit_mb\": 10, \"search_index_budget_s\": -5, \"embed_budget_s\": 7, \"keep_alive_min\": 999, \"text_scale_pct\": 999}");
             var c = Settings.Load();
-            bool clamp = c.Threads == 16 && c.MemoryLimitMb == 2048 && c.SearchIndexBudgetS == 0 && c.KeepAliveMin == 120;
-            Console.WriteLine("settings_clamp threads={0} memory={1} budget={2} keep_alive_min={3} -> {4}", c.Threads, c.MemoryLimitMb, c.SearchIndexBudgetS,
-                              c.KeepAliveMin, clamp ? "ok" : "FAIL");
+            bool clamp = c.Threads == 16 && c.MemoryLimitMb == 2048 && c.SearchIndexBudgetS == 0 && c.KeepAliveMin == 120 && c.TextScalePct == 200 &&
+                         Settings.ClampTextScale(110) == 100 && Settings.ClampTextScale(130) == 125 && Settings.ClampTextScale(150) == 150 &&
+                         Settings.ClampTextScale(-5) == 100 && Settings.ClampTextScale(188) == 200;
+            Console.WriteLine("settings_clamp threads={0} memory={1} budget={2} keep_alive_min={3} text={4} -> {5}", c.Threads, c.MemoryLimitMb, c.SearchIndexBudgetS,
+                              c.KeepAliveMin, c.TextScalePct, clamp ? "ok" : "FAIL");
             // A file without the new key (an older install): keep-alive is on with the default.
             File.WriteAllText(settings.ConfigFile, "{\"threads\": 4}");
-            bool dflt = Settings.Load().KeepAliveMin == 10;
+            var old = Settings.Load();
+            bool dflt = old.KeepAliveMin == 10 && old.TextScalePct == 100 && !old.FocusFirstResult;
             Console.WriteLine("settings_keep_alive_default=" + (dflt ? "ok" : "FAIL"));
             clamp &= dflt;
             bool tmpLeft = File.Exists(settings.ConfigFile + ".tmp");
@@ -755,7 +772,7 @@ namespace HatirMail
             using (var d = new SearchForm.NameDialog(form, "Aylık kargo") { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) })
             {
                 d.Show(); Application.DoEvents(); // no owner: Show(owner) needs an interactive session (the SSH session on 2.19 is not)
-                bool fits = Check(d, "name-dialog");
+                bool fits = Check(d, "name-dialog") & A11yCheck(d, "name-dialog");
                 if (shotDir != null) Shot(d.Body, Path.Combine(shotDir, "ui-name-dialog.png"));
                 var okBtn = SearchForm.AllControls(d).OfType<Button>().First(x => x.DialogResult == DialogResult.OK);
                 d.Box.Text = "  "; bool off = !okBtn.Enabled;
@@ -1138,7 +1155,7 @@ namespace HatirMail
                 d.Show(); Application.DoEvents(); // no owner: see HistoryUiCheck
                 // Body, not the dialog: the desktop of the SSH session on 2.19 is small, and Windows made the 2x dialog
                 // smaller (client 1030x755 for a 1040x832 body). ponytail: the dialog size itself is not checked here.
-                bool fits = Check(d.Body, "exclude-dialog");
+                bool fits = Check(d.Body, "exclude-dialog") & A11yCheck(d, "exclude-dialog");
                 d.Box.SetItemChecked(inbox, true);
                 bool sub = d.Box.GetItemChecked(proj);
                 d.Box.SetItemChecked(proj, false); // refused: the checked parent excludes it
@@ -1168,8 +1185,412 @@ namespace HatirMail
             return ok;
         }
 
+        // ------------------------------------------------------------------ accessibility checks (Windows only: WinForms)
+        /// <summary>An interactive control: it takes the keyboard focus or a click (the inner controls of a NumericUpDown,
+        /// DateTimePicker and the hosted controls of a SearchList popup are parts of their owner).</summary>
+        static bool Interactive(Control c)
+        {
+            if (c.Parent is UpDownBase) return false;
+            return c is ButtonBase || c is TextBoxBase || c is ComboBox || c is ListControl || c is ListView || c is DateTimePicker ||
+                   c is UpDownBase || c is TabControl || c is TabPage || c is TrackBar;
+        }
+
+        /// <summary>The accessibility audit of a window part: each visible interactive control has a name (no "&amp;") and a
+        /// description that is not the name; TabIndex values of the children of each container are unique; the Tab order
+        /// follows the screen (top to bottom, then left to right in one row); every tab of a TabControl can be reached
+        /// (the TabControl is a tab stop, each page has a tab stop); the access keys of one tab (and the tab keys) are
+        /// unique; every color is a system color. Prints one line per rule.</summary>
+        public static bool A11yCheck(Control root, string name)
+        {
+            bool ok = true;
+            Action<string, bool, string> check = (rule, pass, detail) =>
+            {
+                Console.WriteLine("a11y_{0} {1}{2} -> {3}", rule, name, pass || detail.Length == 0 ? "" : " " + detail, pass ? "ok" : "FAIL");
+                ok &= pass;
+            };
+            // Called once for each tab (the controls of the hidden tabs are not Visible); the tab pages themselves always.
+            var all = new[] { root }.Concat(SearchForm.AllControls(root)).ToList();
+            var pages = all.OfType<TabPage>().ToList();
+            var named = all.Where(c => c.Visible && Interactive(c)).Concat(pages).Distinct().ToList();
+            var noName = named.Where(c => string.IsNullOrWhiteSpace(c.AccessibleName) || c.AccessibleName.Contains("&")).ToList();
+            check("names", noName.Count == 0, string.Join(", ", noName.Select(Who)));
+            var noDesc = named.Where(c => string.IsNullOrWhiteSpace(c.AccessibleDescription) || c.AccessibleDescription == c.AccessibleName).ToList();
+            check("descriptions", noDesc.Count == 0, string.Join(", ", noDesc.Select(Who)));
+            var clash = all.Where(c => c.Controls.Count > 1 && !(c is UpDownBase) && !(c is TabControl))
+                           .Where(c => c.Controls.Cast<Control>().GroupBy(x => x.TabIndex).Any(g => g.Count() > 1)).ToList();
+            check("tabindex_unique", clash.Count == 0, string.Join(", ", clash.Select(c => Who(c) + "[" + string.Join(",", c.Controls.Cast<Control>().Select(x => x.TabIndex)) + "]")));
+            // Tab order: walk GetNextControl from the root through the visible, enabled tab stops.
+            var order = new List<Control>();
+            for (var c = root.GetNextControl(null, true); c != null && order.Count < 2000; c = root.GetNextControl(c, true))
+            {
+                var x = c.Parent is UpDownBase ? c.Parent : c; // the edit field of a NumericUpDown = the NumericUpDown
+                if (c.CanSelect && c.TabStop && (order.Count == 0 || order[order.Count - 1] != x)) order.Add(x);
+            }
+            var bad = new List<string>();
+            for (int i = 1; i < order.Count; i++)
+            {
+                Rectangle a = At(root, order[i - 1]), b = At(root, order[i]);
+                bool sameTab = PageOf(order[i - 1]) == PageOf(order[i]);
+                // Next in reading order: lower, or in the same row (vertical overlap) and to the right. 4 px tolerance.
+                bool row = b.Top < a.Bottom - 4 && a.Top < b.Bottom - 4;
+                if (sameTab && !(b.Top >= a.Top - 4 && !row || row && b.Left >= a.Left - 4)) bad.Add(Who(order[i - 1]) + " > " + Who(order[i]));
+            }
+            check("tab_order_visual", bad.Count == 0 && order.Count > 0, string.Join("; ", bad));
+            var tcs = all.OfType<TabControl>().ToList();
+            var unreachable = tcs.Where(t => !t.TabStop).Select(Who)
+                .Concat(pages.Where(p => p.Visible && !SearchForm.AllControls(p).Any(c => c.CanSelect && c.TabStop)).Select(Who)).ToList();
+            check("tabs_reachable", unreachable.Count == 0, string.Join(", ", unreachable));
+            // Access keys: per tab page (with the window-level labels and buttons outside the tabs, and the tab keys).
+            var keyBad = new List<string>();
+            var outside = all.Where(c => (c is Label || c is ButtonBase) && !pages.Any(p => p.Contains(c))).ToList();
+            foreach (var scope in pages.Count > 0 ? pages.Select(p => (Control)p) : new Control[] { null })
+            {
+                var owners = (scope == null ? Enumerable.Empty<Control>() : SearchForm.AllControls(scope)).Concat(outside).Where(c => c is Label && ((Label)c).UseMnemonic || c is ButtonBase)
+                    .Select(c => new { C = c, K = char.ToUpper(SearchForm.Mnemonic(c.Text), System.Globalization.CultureInfo.GetCultureInfo("tr-TR")) })
+                    .Where(x => x.K != '\0').ToList();
+                var keys = owners.Select(x => x.K.ToString()).ToList();
+                if (pages.Count > 0) keys.AddRange(new[] { "A", "İ", "Y" });
+                foreach (var g in keys.GroupBy(x => x).Where(g => g.Count() > 1)) keyBad.Add((scope == null ? "" : Who(scope)) + ":Alt+" + g.Key);
+            }
+            check("mnemonics_unique", keyBad.Count == 0, string.Join(", ", keyBad));
+            var colors = all.Where(c => c.Visible)
+                            .SelectMany(c => new[] { Tuple.Create(c, c.ForeColor), Tuple.Create(c, c.BackColor) })
+                            .Where(t => !t.Item2.IsSystemColor && t.Item2 != Color.Transparent && t.Item2.A != 0).ToList();
+            check("color_system_only", colors.Count == 0, string.Join(", ", colors.Take(8).Select(t => Who(t.Item1) + "=" + t.Item2.Name)));
+            return ok;
+        }
+
+        static TabPage PageOf(Control c) { for (var x = c; x != null; x = x.Parent) if (x is TabPage) return (TabPage)x; return null; }
+
+        static Rectangle At(Control root, Control c) { return root.RectangleToClient(c.Parent.RectangleToScreen(c.Bounds)); }
+
+        static string Who(Control c)
+        {
+            string n = !string.IsNullOrEmpty(c.AccessibleName) ? c.AccessibleName : !string.IsNullOrEmpty(c.Text) ? SearchForm.StripAmp(c.Text) : c.Name;
+            return c.GetType().Name + "'" + Short(n ?? "") + "'";
+        }
+
+        [DllImport("oleacc.dll")] static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint id, ref Guid iid, [MarshalAs(UnmanagedType.IUnknown)] out object acc);
+
+        /// <summary>The MSAA name (what a screen reader gets) of a window or of child id of it (a list row: 1-based).</summary>
+        static string MsaaName(Control c, int child)
+        {
+            var iid = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71"); // IAccessible
+            object o;
+            if (AccessibleObjectFromWindow(c.Handle, 0xFFFFFFFC, ref iid, out o) != 0 || o == null) return null; // OBJID_CLIENT
+            try { return ((Accessibility.IAccessible)o).get_accName(child); }
+            catch (Exception) { return null; }
+            finally { Marshal.ReleaseComObject(o); }
+        }
+
+        /// <summary>Names as MSAA gives them to a screen reader: the search box, a filter list, a date field, a button, the
+        /// tabs, and the first result row (the sentence).</summary>
+        static bool MsaaCheck(SearchForm form)
+        {
+            var all = SearchForm.AllControls(form).ToList();
+            var want = new[] { form.QueryBox, form.FilterBoxes[0], (Control)form.DatePickers[0],
+                               all.OfType<Button>().First(b => b.AccessibleName == "Ara"), form.Tabs };
+            var bad = want.Where(c => MsaaName(c, 0) != c.AccessibleName).Select(c => Who(c) + "=" + (MsaaName(c, 0) ?? "null")).ToList();
+            bool row = form.ResultCount > 0 && MsaaName(form.Results, 1) == form.ResultSentence(0);
+            Console.WriteLine("a11y_msaa_names {0} -> {1}", string.Join(", ", bad), bad.Count == 0 ? "ok" : "FAIL");
+            Console.WriteLine("row_text_msaa first='{0}' -> {1}", form.ResultCount > 0 ? MsaaName(form.Results, 1) : "-", row ? "ok" : "FAIL");
+            return bad.Count == 0 && row;
+        }
+
+        /// <summary>Result rows: the native text is the sentence and the other columns are empty; the cells keep the column
+        /// texts (sort, layout). High contrast while the window is open: the marks are bold and underlined, all colors stay
+        /// system colors. The focus frame: around the search box, a filter list, the result list, a tab header.</summary>
+        static bool ColorRowRingCheck(SearchForm form, string shotDir)
+        {
+            bool ok = true;
+            Action<string, bool> check = (n, pass) => { Console.WriteLine(n + " -> " + (pass ? "ok" : "FAIL")); ok &= pass; };
+            form.ShowTab(0);
+            form.Feed("search", Results());
+            var lv = form.Results;
+            bool native = lv.Items.Count == 3 && Enumerable.Range(0, 3).All(i => lv.Items[i].Text == form.ResultSentence(i) &&
+                          lv.Items[i].SubItems.Cast<ListViewItem.ListViewSubItem>().Skip(1).All(x => x.Text == ""));
+            string s0 = form.ResultSentence(0);
+            check("row_text_native first='" + s0 + "'", native && s0.StartsWith("Ahmet Demir, Kargo faturası – Eylül 2026 (Hızlı Lojistik A.Ş.), 12 Eylül") &&
+                                                    s0.Contains(", Gelen Kutusu, ekte eşleşti: Hızlı Lojistik") && s0.EndsWith("(Kargo_Faturalari_2026.zip içinde)") &&
+                                                    form.ResultSentence(1).Contains(", Projeler") && form.ResultSentence(2).EndsWith("zayıf eşleşme") &&
+                                                    form.ResultCells(0)[1] == "Ahmet Demir");
+            // High contrast on (simulated): Windows sends WM_SYSCOLORCHANGE; the window follows without a restart.
+            SearchForm.HighContrastOverride = true;
+            form.SimulateSystemColorsChanged();
+            form.SelectResult(0); Application.DoEvents();
+            int marked = form.PreviewMarkedChars;
+            bool hcColors = A11yCheck(form.Root, "high-contrast");
+            if (shotDir != null) Shot(form.Root, Path.Combine(shotDir, "ui-high-contrast.png"));
+            SearchForm.HighContrastOverride = false;
+            form.SimulateSystemColorsChanged();
+            form.SelectResult(0); Application.DoEvents();
+            check("hc_live marked=" + marked, marked > 0 && hcColors && form.PreviewMarkedChars == marked);
+            SearchForm.HighContrastOverride = null;
+            form.SimulateSystemColorsChanged();
+            // Focus frame: outside the target on all sides, inside the window.
+            foreach (var t in new Control[] { form.QueryBox, form.FilterBoxes[0], lv, form.Tabs })
+            {
+                form.SetActive(t); Application.DoEvents();
+                var r = form.RingBounds;
+                var tr = t == form.Tabs ? form.Root.RectangleToClient(t.RectangleToScreen(form.Tabs.GetTabRect(0))) : At(form.Root, t);
+                var want = Rectangle.Inflate(tr, 2, 2);
+                want.Intersect(new Rectangle(Point.Empty, form.Root.Size));
+                bool around = r.Width > 0 && r.Contains(want);
+                check("ring_" + t.AccessibleName + " ring=" + r + " target=" + tr, around);
+            }
+            form.SetActive(lv); Application.DoEvents();
+            if (shotDir != null) Shot(form.Root, Path.Combine(shotDir, "ui-focus-list.png"));
+            return ok;
+        }
+
+        /// <summary>Keyboard: focus at the window open, Esc back to the search box, Ctrl+F, Enter opens, Shift+F10 and the
+        /// menu key open the result menu (none without a selected row), Ctrl+1..5 sort, Alt+tab keys, Alt+N, F1 list, the
+        /// first-result setting.</summary>
+        static bool KeyCheck(SearchForm form, JsonSource src, string shotDir)
+        {
+            bool ok = true;
+            Action<string, bool> check = (n, pass) => { Console.WriteLine("key_" + n + " -> " + (pass ? "ok" : "FAIL")); ok &= pass; };
+            form.ShowTab(0);
+            form.Feed("search", Results());
+            var lv = form.Results;
+            form.SetActive(lv); form.ShowTab(1); form.SetActive(form.Tabs);
+            form.PressKey(Keys.Escape);
+            bool esc1 = form.Active == form.QueryBox && form.Tabs.SelectedIndex == 0;
+            form.SetActive(lv);
+            form.PressKey(Keys.Escape);
+            check("esc_to_query", esc1 && form.Active == form.QueryBox);
+            form.ShowTab(2); form.SetActive(form.Tabs);
+            form.PressKey(Keys.Control | Keys.F);
+            check("ctrl_f", form.Active == form.QueryBox && form.Tabs.SelectedIndex == 0 && ((TextBox)form.QueryBox).SelectionLength == form.QueryBox.Text.Length);
+            // Enter in the list (KeyDown, as the key message gives it to the list).
+            form.SelectResult(1); form.SetActive(lv);
+            int before = src.Opened.Count;
+            var kd = typeof(Control).GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            kd.Invoke(lv, new object[] { new KeyEventArgs(Keys.Enter) });
+            check("enter_open", src.Opened.Count == before + 1 && src.Opened.Last() == form.SelectedEid);
+            // Shift+F10 / menu key = WM_CONTEXTMENU with lParam -1.
+            SendMessage(lv.Handle, 0x7B, lv.Handle, (IntPtr)(-1)); Application.DoEvents();
+            bool menu = form.ResultMenu.Visible;
+            form.ResultMenu.Close(); Application.DoEvents();
+            lv.SelectedItems.Clear();
+            SendMessage(lv.Handle, 0x7B, lv.Handle, (IntPtr)(-1)); Application.DoEvents();
+            bool none = !form.ResultMenu.Visible;
+            form.ResultMenu.Close();
+            check("shift_f10 menu=" + menu + " no_row_no_menu=" + none, menu && none);
+            form.SelectResult(0);
+            // Ctrl+1..5 (and the number pad): sort by the column; again: the other order.
+            var heads = new List<string>();
+            for (int i = 0; i < 5; i++) { form.PressKey(Keys.Control | (Keys.D1 + i)); heads.Add(form.HeaderText(i)); }
+            form.PressKey(Keys.Control | Keys.NumPad3); form.PressKey(Keys.Control | Keys.NumPad3); // the number pad; twice: the other order
+            bool again = form.HeaderText(2) == "Tarih ▲";
+            form.PressKey(Keys.Control | Keys.D4);
+            check("ctrl_sort " + string.Join("|", heads), heads.SequenceEqual(new[] { "Konu ▲", "Kişi ▲", "Tarih ▼", "Güven ▼", "Neden ▲" }) && again &&
+                                                       form.HeaderText(3) == "Güven ▼");
+            if (form.HeaderText(3) != "Güven ▼") form.ClickHeader(3);
+            // Access keys: the tabs (Alt+A, Alt+İ, Alt+Y; the TabControl shows "&" as text) and a filter label.
+            bool tabsOk = true;
+            foreach (var t in new[] { Tuple.Create('i', 1), Tuple.Create('Y', 2), Tuple.Create('a', 0) })
+            {
+                form.PressMnemonic(t.Item1);
+                tabsOk &= form.Tabs.SelectedIndex == t.Item2 && form.Active == form.Tabs;
+            }
+            check("mnemonic_tabs", tabsOk);
+            form.SetActive(form.QueryBox);
+            form.PressMnemonic('n');
+            check("mnemonic_field active=" + (form.Active != null ? form.Active.AccessibleName : "-"), form.Active == form.FilterBoxes[0]);
+            // Second ways (a host loop without pre-translation): Alt+letter as WM_SYSCOMMAND SC_KEYMENU; a key message that
+            // reaches the focused control (WM_KEYDOWN Esc to the list: KeyPreview).
+            form.SetActive(form.QueryBox);
+            SendMessage(form.Handle, 0x112, (IntPtr)0xF100, (IntPtr)'l');
+            bool sys = form.Active == form.FilterBoxes[1];
+            form.SetActive(lv);
+            SendMessage(lv.Handle, 0x100, (IntPtr)0x1B, IntPtr.Zero);
+            check("fallback sc_keymenu=" + sys + " keypreview_esc=" + (form.Active == form.QueryBox), sys && form.Active == form.QueryBox);
+            // F1: the list has every shortcut and every access key; the dialog passes the layout and audit checks.
+            string text = null; bool dlgOk = false;
+            form.ShowModal = d =>
+            {
+                d.StartPosition = FormStartPosition.Manual; d.Location = new Point(-32000, -32000);
+                d.Show(); Application.DoEvents();
+                var sd = (SearchForm.ShortcutDialog)d;
+                text = sd.Box.Text;
+                dlgOk = Check(sd.Body, "shortcut-dialog") & A11yCheck(sd, "shortcut-dialog") && sd.CancelButton != null; // Body: see ExcludeUiCheck
+                if (shotDir != null) Shot(sd.Body, Path.Combine(shotDir, "ui-shortcuts.png"));
+                d.Close();
+            };
+            form.PressKey(Keys.F1);
+            form.ShowModal = null;
+            var keysOnTabs = new[] { "Alt+R: Ara", "Alt+U: Aramayı durdur", "Alt+N: Gönderen", "Alt+Ş: Bitiş", "Alt+P: Posta kutusu",
+                                     "Alt+K: Klasörler", "Alt+B: Yazı büyüklüğü", "Alt+L: Arama bitince ilk sonuca geç" };
+            bool listed = text != null && SearchForm.Shortcuts.All(sc => text.Contains(sc[0] + ": " + sc[1])) && keysOnTabs.All(text.Contains);
+            check("f1 lines=" + (text ?? "").Split('\n').Length, listed && dlgOk);
+            // Window open: the focus is in the search box (Load).
+            // "Arama bitince ilk sonuca geç": the final list moves the focus only with the setting on, while the focus is in
+            // the query row and the text did not change.
+            form.FocusFirstSetting = true;
+            lv.SelectedItems.Clear(); // no row chosen by the user: the first row of the new list is selected
+            form.FocusQuery(); form.MarkSearchStarted();
+            form.Feed("search", Results());
+            bool moved = form.Active == lv && lv.FocusedItem != null && lv.FocusedItem.Index == 0 && lv.Items[0].Selected;
+            form.FocusQuery(); form.MarkSearchStarted(); form.SetQuery(form.QueryBox.Text + " x");
+            form.Feed("search", Results());
+            bool textChanged = form.Active == form.QueryBox;
+            form.FocusFirstSetting = false;
+            form.FocusQuery(); form.MarkSearchStarted();
+            form.Feed("search", Results());
+            bool off = form.Active == form.QueryBox;
+            check("first_result moved=" + moved + " text_changed_stays=" + textChanged + " setting_off_stays=" + off, moved && textChanged && off);
+            form.SetQuery("geçen ay Ahmet'ten gelen kargo faturası");
+            return ok;
+        }
+
+
+        /// <summary>Text size 150 % and 200 % (Ayarlar, Kaydet): every tab at the default and minimum size passes the
+        /// layout, filter grid and audit checks; back to 100 % the sizes are the same as before (±2 px).</summary>
+        static bool ScaleCheck(SearchForm form, Settings settings, string shotDir)
+        {
+            bool ok = true;
+            var root = form.Root;
+            var all = SearchForm.AllControls(form).ToList();
+            var sizeBox = all.OfType<ComboBox>().First(x => x.AccessibleName == "Yazı büyüklüğü");
+            var save = all.OfType<Button>().First(x => x.Text == "&Kaydet");
+            Func<int[]> dims = () => new[] { form.QueryBox.Height, form.FilterBoxes[0].Height, form.Results.Columns[2].Width, form.Font.Height };
+            ShowAllFilterRows(form);
+            var start = dims();
+            Directory.CreateDirectory(settings.Home);
+            foreach (int pct in new[] { 150, 200, 100 })
+            {
+                form.ShowTab(2);
+                sizeBox.SelectedIndex = (pct - 100) / 25;
+                save.PerformClick();
+                Application.DoEvents();
+                bool applied = form.TextScalePct == pct && Settings.Load().TextScalePct == pct;
+                Console.WriteLine("scale_text_{0} applied={1} font={2:0.0}pt -> {3}", pct, applied, form.Font.SizeInPoints, applied ? "ok" : "FAIL");
+                ok &= applied;
+                if (pct == 100) break;
+                foreach (var size in new[] { form.DesignClientSize, form.MinClientSize })
+                {
+                    root.Bounds = new Rectangle(Point.Empty, size);
+                    for (int tab = 0; tab < 3; tab++)
+                    {
+                        form.ShowTab(tab); root.PerformLayout(); Application.DoEvents();
+                        string n = "text" + pct + "-" + (size == form.DesignClientSize ? "default" : "min") + "-" + new[] { "ara", "indeks", "ayarlar" }[tab];
+                        ok &= Check(root, n);
+                        if (tab == 0) { ok &= FilterGrid(form, n); ok &= A11yCheck(root, n); }
+                        if (shotDir != null && tab == 0 && size == form.DesignClientSize) Shot(root, Path.Combine(shotDir, "ui-text" + pct + "-ara.png"));
+                    }
+                }
+            }
+            root.Bounds = new Rectangle(Point.Empty, form.DesignClientSize); root.PerformLayout(); Application.DoEvents();
+            var end = dims();
+            bool back = start.Zip(end, (a, b) => Math.Abs(a - b) <= 2).All(x => x);
+            Console.WriteLine("scale_text_back start={0} end={1} -> {2}", string.Join("/", start), string.Join("/", end), back ? "ok" : "FAIL");
+            if (File.Exists(settings.ConfigFile)) File.Delete(settings.ConfigFile);
+            form.ClickClearFilters();
+            return ok && back;
+        }
+
+        /// <summary>A small screen: the window at 200 % text in 1366x690 (and 2x DPI at 125 % text): the pages scroll, no
+        /// control is cut (Check on the scrolled page area). Then a DPI change 192 -> 288 -> 192 (WM_DPICHANGED as Windows
+        /// sends it): each step passes the layout checks, and the sizes come back (±2 px).</summary>
+        static bool DpiCheck(SearchForm form, string shotDir)
+        {
+            bool ok = true;
+            var root = form.Root;
+            Func<int[]> dims = () => new[] { form.QueryBox.Height, form.FilterBoxes[0].Height, form.Results.Columns[2].Width, form.Font.Height };
+            ShowAllFilterRows(form);
+            var start = dims();
+            int d0 = form.WindowDpi;
+            foreach (int to in new[] { d0 * 3 / 2, d0 })
+            {
+                var wr = form.Bounds;
+                var rc = new int[] { wr.Left, wr.Top, wr.Left + wr.Width * to / form.WindowDpi, wr.Top + wr.Height * to / form.WindowDpi };
+                var h = GCHandle.Alloc(rc, GCHandleType.Pinned);
+                try { SendMessage(form.Handle, 0x02E0, (IntPtr)(to << 16 | to), h.AddrOfPinnedObject()); }
+                finally { h.Free(); }
+                Application.DoEvents();
+                var size = new Size(form.DesignClientSize.Width, form.DesignClientSize.Height);
+                root.Bounds = new Rectangle(Point.Empty, size);
+                bool step = form.WindowDpi == to;
+                for (int tab = 0; tab < 3; tab++)
+                {
+                    form.ShowTab(tab); root.PerformLayout(); Application.DoEvents();
+                    step &= Check(root, "dpi" + to + "-" + new[] { "ara", "indeks", "ayarlar" }[tab]);
+                    if (tab == 0) step &= FilterGrid(form, "dpi" + to);
+                }
+                if (shotDir != null && to != d0) Shot(root, Path.Combine(shotDir, "ui-dpi" + to + "-ara.png"));
+                Console.WriteLine("dpi_change to={0} window_dpi={1} -> {2}", to, form.WindowDpi, step ? "ok" : "FAIL");
+                ok &= step;
+            }
+            var end = dims();
+            bool back = start.Zip(end, (a, b) => Math.Abs(a - b) <= 2).All(x => x);
+            Console.WriteLine("dpi_change_back start={0} end={1} -> {2}", string.Join("/", start), string.Join("/", end), back ? "ok" : "FAIL");
+            // Small screen: the real window of this check is limited to the 1024x768 screen of the SSH session, smaller
+            // than the minimum window at 2x (1640x1120). The root fills the window as in Outlook (Dock Fill): the window
+            // scrolls, the root keeps the minimum size, and every tab passes the layout checks at that size.
+            root.Dock = DockStyle.Fill;
+            form.PerformLayout(); Application.DoEvents();
+            bool small = true;
+            for (int tab = 0; tab < 3; tab++)
+            {
+                form.ShowTab(tab); form.PerformLayout(); Application.DoEvents();
+                bool scrolls = form.HorizontalScroll.Visible && form.VerticalScroll.Visible && form.ClientSize.Width < form.AutoScrollMinSize.Width;
+                bool size = root.Width >= form.AutoScrollMinSize.Width && root.Height >= form.AutoScrollMinSize.Height;
+                bool inside = Check(root, "small-" + new[] { "ara", "indeks", "ayarlar" }[tab]);
+                Console.WriteLine("scale_small_screen tab={0} window_client={1} root={2} min={3} scrolls={4} -> {5}", tab, form.ClientSize, root.Size,
+                                  form.AutoScrollMinSize, scrolls, scrolls && size && inside ? "ok" : "FAIL");
+                small &= scrolls && size && inside;
+            }
+            if (shotDir != null) { form.ShowTab(0); Shot(root, Path.Combine(shotDir, "ui-small-screen.png")); }
+            root.Dock = DockStyle.None;
+            root.Bounds = new Rectangle(Point.Empty, form.DesignClientSize); root.PerformLayout(); Application.DoEvents();
+            // Per-monitor DPI awareness of a window made inside Native.DpiScope (as Connect.ShowForm makes the window).
+            int aware;
+            using (new Native.DpiScope())
+            using (var f = new Form { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) })
+            { f.Show(); aware = Native.WindowAwareness(f.Handle); f.Close(); }
+            Console.WriteLine("dpi_aware awareness={0} -> {1}", aware, aware == 2 ? "ok" : "FAIL");
+            form.ClickClearFilters();
+            return ok && back && small && aware == 2;
+        }
+
+        /// <summary>Results, filter lists, "Özel aralık…" (the third filter row) and a query: the fullest Ara tab.</summary>
+        static void ShowAllFilterRows(SearchForm form)
+        {
+            form.Feed("search", Results());
+            form.Feed("status", Facets(false));
+            form.FilterBoxes[3].SelectedIndex = form.FilterBoxes[3].Items.Count - 1; form.FilterBoxes[4].SelectedIndex = 3;
+        }
+
+        // Result row sentences (no window: runs on mono on the Mac too).
+        static bool RowTextCheck()
+        {
+            bool ok = true;
+            var today = new DateTime(2026, 10, 26);
+            Func<string, string, string, string, Dictionary<string, object>> r = (sender, subject, date, conf) =>
+                new Dictionary<string, object> { {"sender", sender}, {"subject", subject}, {"date", date}, {"confidence", conf}, {"match_attachment", null} };
+            var full = r("Ayşe Yılmaz", "Bütçe taslağı", "2026-03-12T09:30:00", "yüksek"); full["match_attachment"] = "rapor.xlsx";
+            var zip = r("Ahmet Demir", "Kargo", "2026-09-01T08:00:00", "orta"); zip["match_attachment"] = "Arsiv.zip"; zip["match_att_member"] = "Eylül\\fatura.pdf";
+            var cases = new[] {
+                Tuple.Create("full", RowText.Sentence(full, "\\Gelen Kutusu", today), "Ayşe Yılmaz, Bütçe taslağı, 12 Mart, Gelen Kutusu, ekte eşleşti: rapor.xlsx"),
+                Tuple.Create("no_attachment", RowText.Sentence(r("Ayşe Yılmaz", "Bütçe", "2026-10-01T00:00:00", "orta"), "\\Gelen Kutusu\\Projeler", today), "Ayşe Yılmaz, Bütçe, 1 Ekim, Projeler"),
+                Tuple.Create("zip_member", RowText.Sentence(zip, "\\Arşiv", today), "Ahmet Demir, Kargo, 1 Eylül, Arşiv, ekte eşleşti: fatura.pdf (Arsiv.zip içinde)"),
+                Tuple.Create("weak", RowText.Sentence(r("Can", "Sayım", "2026-08-20T14:05:00", "zayıf"), null, today), "Can, Sayım, 20 Ağustos, zayıf eşleşme"),
+                Tuple.Create("empty_parts", RowText.Sentence(r("", "  ", "", "kelime"), "", today), ""),
+                Tuple.Create("other_year", RowText.Sentence(r("Zeynep", "Teklif", "2025-12-31T23:00:00", "yüksek"), "\\Gelen Kutusu", today), "Zeynep, Teklif, 31 Aralık 2025, Gelen Kutusu") };
+            foreach (var c in cases)
+            {
+                bool pass = c.Item2 == c.Item3;
+                Console.WriteLine("row_text_{0} -> {1}{2}", c.Item1, pass ? "ok" : "FAIL", pass ? "" : " got='" + c.Item2 + "'");
+                ok &= pass;
+            }
+            Console.WriteLine(ok ? "PASS" : "FAIL");
+            return ok;
+        }
+
         // Checks on the visible controls: text fits (labels, buttons, check boxes, tabs), controls stay inside the
-        // window, list columns fill the list without a cut.
+        // window, list columns fill the list without a cut. A control in a container that scrolls (AutoScroll: the
+        // Ayarlar page) must be inside the scrolled area of that container (DisplayRectangle), not inside its visible part.
         static bool Check(Control root, string name)
         {
             bool ok = true;
@@ -1181,8 +1602,15 @@ namespace HatirMail
                 // Inside the client area of its parent (and so inside the window): nothing is clipped. Bounds = the full
                 // window of the control (its border included) in the client coordinates of the parent.
                 var r = c.Parent.RectangleToScreen(c.Bounds);
-                var pr = c.Parent.RectangleToScreen(c.Parent.ClientRectangle);
-                if (r.Width > 0 && r.Height > 0 && (!pr.Contains(r) || !rr.Contains(r)))
+                var sp = c.Parent as ScrollableControl;
+                bool scrolls = sp != null && sp.AutoScroll;
+                // The scroll area = DisplayRectangle with the padding of the page (DisplayRectangle leaves the padding out).
+                var pr = c.Parent.RectangleToScreen(scrolls ? Rectangle.FromLTRB(sp.DisplayRectangle.Left - sp.Padding.Left, sp.DisplayRectangle.Top - sp.Padding.Top,
+                                                                                 sp.DisplayRectangle.Right + sp.Padding.Right, sp.DisplayRectangle.Bottom + sp.Padding.Bottom)
+                                                            : c.Parent.ClientRectangle);
+                bool inScroll = false;
+                for (var x = c.Parent; x != null && x != root; x = x.Parent) { var xs = x as ScrollableControl; if (xs != null && xs.AutoScroll) inScroll = true; }
+                if (r.Width > 0 && r.Height > 0 && (!pr.Contains(r) || !inScroll && !rr.Contains(r)))
                 { Console.WriteLine("{0}: outside {1} '{2}' {3} parent={4}", name, c.GetType().Name, Short(c.Text), r, pr); ok = false; }
                 var l = c as Label;
                 if (l != null && l.Text.Length > 0)
@@ -1224,11 +1652,16 @@ namespace HatirMail
                     int sum = lv.Columns.Cast<ColumnHeader>().Sum(h => h.Width);
                     if (sum > lv.ClientSize.Width || sum < lv.ClientSize.Width - 8 || lv.Columns[0].Width < lv.Columns[1].Width)
                     { Console.WriteLine("{0}: columns {1} list {2} first {3}", name, sum, lv.ClientSize.Width, lv.Columns[0].Width); ok = false; }
-                    // Every cell except the first column (subject, folder: long texts end with "…") fits its column.
+                    // Every cell except the first column (subject, folder: long texts end with "…") fits its column. The
+                    // result list draws its cells from the result ("cells"); its row text is the sentence.
                     foreach (ListViewItem it in lv.Items)
                         for (int col = 1; col < lv.Columns.Count; col++)
-                            if (TextRenderer.MeasureText(it.SubItems[col].Text, lv.Font).Width + 12 > lv.Columns[col].Width)
-                            { Console.WriteLine("{0}: cell cut col={1} '{2}' w={3}", name, col, it.SubItems[col].Text, lv.Columns[col].Width); ok = false; }
+                        {
+                            var d = it.Tag as Dictionary<string, object>;
+                            string t = d != null && d.ContainsKey("cells") ? ((string[])d["cells"])[col] : it.SubItems[col].Text;
+                            if (TextRenderer.MeasureText(t, lv.Font).Width + 12 > lv.Columns[col].Width)
+                            { Console.WriteLine("{0}: cell cut col={1} '{2}' w={3}", name, col, t, lv.Columns[col].Width); ok = false; }
+                        }
                 }
                 var tc = c as TabControl;
                 if (tc != null)
@@ -1269,9 +1702,19 @@ namespace HatirMail
                             var tb = (TextBox)c;
                             g.FillRectangle(SystemBrushes.Window, r);
                             if (!(c.Parent is UpDownBase)) ControlPaint.DrawBorder3D(g, r, Border3DStyle.Sunken);
-                            TextRenderer.DrawText(g, tb.Text, tb.Font, Rectangle.Inflate(r, -4, 0), tb.Enabled ? tb.ForeColor : SystemColors.GrayText,
-                                                  TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis |
+                            TextRenderer.DrawText(g, tb.Text, tb.Font, Rectangle.Inflate(r, -4, tb.Multiline ? -4 : 0), tb.Enabled ? tb.ForeColor : SystemColors.GrayText,
+                                                  (tb.Multiline ? TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl
+                                                                : TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis) |
                                                   (tb.TextAlign == HorizontalAlignment.Right ? TextFormatFlags.Right : TextFormatFlags.Left));
+                        }
+                        else if (c is SearchForm.FocusFrame) // DrawToBitmap draws the children in reverse order: the frame is below
+                        {
+                            int w = ((SearchForm.FocusFrame)c).Thickness;
+                            using (var br = new SolidBrush(c.BackColor))
+                            {
+                                g.FillRectangle(br, r.X, r.Y, r.Width, w); g.FillRectangle(br, r.X, r.Bottom - w, r.Width, w);
+                                g.FillRectangle(br, r.X, r.Y, w, r.Height); g.FillRectangle(br, r.Right - w, r.Y, w, r.Height);
+                            }
                         }
                         else if (c is ComboBox)
                         {
@@ -1325,6 +1768,7 @@ namespace HatirMail
                 new Dictionary<string, object> { {"eid", eid}, {"subject", subj}, {"sender", who}, {"recipients", "Furkan Çakır; Muhasebe Ekibi"},
                     {"sender_key", who == "Ahmet Demir" ? "ahmet.demir@hizli-lojistik.example" : "ayse@x.example"},
                     {"date", dates[eid]}, {"confidence", conf}, {"why", why}, {"snippet", snip}, {"hl", hl},
+                    {"folder", eid == "E1" ? "F-INBOX" : eid == "E2" ? "F-PROJ" : "F-ARCH"},
                     {"hl_subject", new ArrayList { new ArrayList { 0, 5 }, new ArrayList { 6, 8 } }}, {"attachments", "Fatura_2026-09.pdf; İrsaliye.xlsx"},
                     {"match_attachment", null} };
             string s1 = "Merhaba Furkan Bey, eylül ayına ait kargo faturası ekte gönderilmiştir. Toplam tutar 4.250 TL olup ödeme vadesi 30 gündür. İyi çalışmalar.";

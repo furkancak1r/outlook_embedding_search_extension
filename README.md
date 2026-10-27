@@ -7,7 +7,8 @@ bileşeni, ONNX Runtime) kullanıcının kendi bilgisayarında çalışır. Mode
 pencere açıkken hazır kalır; aramalar modeli beklemez. Pencere kapanınca model de kapanır. Pencerede üç sekme vardır: **Ara**
 (gönderen, alıcı, klasör, tarih ve ek filtreleriyle; sütun başlığına tıklayarak sıralama), **İndeks** (indeks durumu, yüzdeler, tam indeksleme ve yalnız değişiklikleri işleyen
 **Güncelle**) ve **Ayarlar** (indekslenmeyecek klasörleri seçme dahil). Outlook'ta bir e-postaya sağ tıklayınca
-**Benzerlerini bul** aynı konudaki e-postaları listeler.
+**Benzerlerini bul** aynı konudaki e-postaları listeler. Pencere yalnız klavyeyle kullanılabilir (F1 kısayolları listeler), ekran okuyucuya Türkçe
+adlar verir, yazı büyüklüğü %100–%200 arasında ayarlanır ve Windows yüksek karşıtlık temasına uyar.
 
 | Belge | İçerik |
 |---|---|

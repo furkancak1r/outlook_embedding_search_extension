@@ -11,7 +11,7 @@ REFS="-nostdlib -r:$REF/mscorlib.dll -r:$REF/System.dll -r:$REF/System.Core.dll 
 csc -nologo -deterministic -langversion:7.3 -target:library -platform:anycpu -optimize+ -warnaserror- -nowarn:1591 \
     $REFS -out:"$OUT/HatirMail.dll" HatirMail.cs SearchForm.cs
 csc -nologo -deterministic -langversion:7.3 -target:winexe -platform:anycpu -optimize+ \
-    $REFS -r:$REF/System.Xml.dll -r:$REF/System.Xml.Linq.dll -r:"$OUT/HatirMail.dll" -out:"$OUT/HatirMail.TestHost.exe" TestHost.cs
+    $REFS -r:$REF/System.Xml.dll -r:$REF/System.Xml.Linq.dll -r:$REF/Accessibility.dll -r:"$OUT/HatirMail.dll" -out:"$OUT/HatirMail.TestHost.exe" TestHost.cs
 echo "built: $OUT/HatirMail.dll $OUT/HatirMail.TestHost.exe"
 csc -nologo -deterministic -langversion:7.3 -target:exe -platform:anycpu -optimize+ \
     $REFS -out:"$OUT/HatirMail.OlbCheck.exe" OlbCheck.cs

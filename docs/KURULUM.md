@@ -296,6 +296,45 @@ Sonuçlardaki **Güven** sütunu:
 | Zayıf (gri) | Yalnız uzak benzerlik var; büyük olasılıkla aradığınız posta değil |
 | Kelime | Anlamsal arama bitmeden önce gösterilen tam kelime eşleşmesi |
 
+## Erişilebilirlik ve klavye
+
+Pencerenin tamamı yalnız klavyeyle kullanılabilir. **F1** bu bölümdeki kısayolların listesini açar.
+
+| Kısayol | Ne yapar |
+|---|---|
+| Ctrl+F | Arama kutusuna gider |
+| Esc | Arama kutusuna döner (açık bir liste ya da takvim varsa önce onu kapatır) |
+| Tab, Shift+Tab | Sonraki ya da önceki alana geçer. Sıra ekrandaki sıradır: yukarıdan aşağıya, soldan sağa |
+| Ctrl+Tab | Sonraki sekmeyi açar |
+| Alt+A, Alt+İ, Alt+Y | Ara, İndeks ya da Ayarlar sekmesini açar |
+| Enter (arama kutusunda) | Aramayı başlatır |
+| Enter (sonuç listesinde) | Seçili e-postayı Outlook'ta açar |
+| Shift+F10 ya da Menü tuşu (sonuç listesinde) | Seçili e-postanın menüsünü satırın altında açar |
+| Ctrl+1 … Ctrl+5 | Sonuçları Konu, Kişi, Tarih, Güven ya da Neden sütununa göre sıralar. Yeniden basınca sıra döner |
+
+Erişim tuşları (Alt ile birlikte, altı çizili harf): **Ara** sekmesinde Ara düğmesi R, Durdur U, Outlook'ta Aç Ç,
+Aramalar M, Eki aç E, Filtreleri temizle F, Gönderen N, Alıcı L, Klasör S, Tarih T, Ek K, Başlangıç B, Bitiş Ş.
+**İndeks** sekmesinde Posta kutusu P, Durumu yenile E, İndekslemeyi başlat B, Güncelle G, Durdur D, Klasörler K.
+**Ayarlar** sekmesinde İşlemci çekirdeği Ç, Bellek sınırı N, Aramada indeksleme M, Yapay zekâyı hazır tut Z, Yazı
+büyüklüğü B, Ek dosyaları D, İlk sonuca geç L, Kaydet K, Varsayılan değerler V, Klasörleri hariç tut H, İndeksi sil S.
+
+> **Not:** Bu sürümde iki kısayol değişti: **Ara** düğmesi Alt+R (Alt+A artık Ara sekmesini açar), **Durumu yenile**
+> Alt+E (Alt+Y artık Ayarlar sekmesini açar).
+
+- **Odak:** Pencere açılınca odak arama kutusundadır. Odaktaki alanın çevresinde kalın bir çerçeve görünür. Sonuç
+  listesinde odaktaki satırın da çerçevesi vardır.
+- **Ekran okuyucu (NVDA, Ekran Okuyucusu):** Her alanın Türkçe bir adı ve açıklaması vardır ("Gönderen filtresi",
+  "Ara, düğme" gibi). Sonuç listesindeki her satır tek cümle okunur, örneğin "Ayşe Yılmaz, Bütçe taslağı, 12 Mart, Gelen
+  Kutusu, ekte eşleşti: rapor.xlsx". Cümlede gönderen, konu, tarih (bu yıl değilse yılla), klasör ve varsa ek eşleşmesi
+  vardır. Zayıf sonuçların sonunda "zayıf eşleşme" yazar.
+- **Yazı büyüklüğü:** Ayarlar sekmesinde **Yazı büyüklüğü**'nü seçin (%100–%200) ve **Kaydet**'e basın. Pencere hemen
+  büyür; alanlar ve sütunlar yeniden yerleşir. Pencere ekrana sığmazsa sekme kaydırılır, hiçbir alan kesilmez.
+- **Birden çok monitör:** Pencere, farklı ölçekli (DPI) bir monitöre taşınınca o monitöre göre yeniden ölçeklenir.
+  Windows 10 sürüm 1607'den eski sistemlerde pencere ana monitörün ölçeğinde kalır.
+- **Yüksek karşıtlık:** Pencere yalnız Windows sistem renklerini kullanır. Windows'ta yüksek karşıtlık teması açılınca
+  (Sol Alt + Sol Shift + Print Screen) pencere yeniden açılmadan temaya uyar. Önizlemede aranan sözcükler kalın, yüksek
+  karşıtlıkta kalın ve altı çizili yazılır. Eksik indeks uyarısı renk yerine kalın yazıyla gösterilir.
+
 ## Ayarlar
 
 **Ayarlar** sekmesinde değeri değiştirin ve **Kaydet**'e basın. Değerler `%LOCALAPPDATA%\HatirMail\settings.json`
@@ -308,7 +347,9 @@ varsayılana döndürür (kaydetmek için yine **Kaydet**'e basın).
 | Bellek sınırı (MB) | `memory_limit_mb` | 4096 | 2048–32768 | Arama işleminin bellek sınırı (Windows Job Object). 2.19 ölçümü: modelle indeksleme 4 çekirdekte en çok ~2.350 MB, 16 çekirdekte (iki iş) en çok ~3.400 MB |
 | Aramada indeksleme (sn) | `search_index_budget_s` | 20 | 0–600 | Ara'ya basınca yeni postaları indekslemek için en çok bu kadar beklenir. 0: aramada indeksleme yok |
 | Yapay zekâyı hazır tut (dk) | `keep_alive_min` | 10 | 0–120 | Pencere açıkken model son işten sonra bu kadar dakika bellekte kalır; aramalar modeli beklemez. Pencere kapanınca model de kapanır. 0: her aramada model yeniden yüklenir ve iş bitince bellek boşalır |
+| Yazı büyüklüğü | `text_scale_pct` | 100 | 100–200 (25'lik adımlar) | Penceredeki yazıların ve alanların büyüklüğü. Kaydet'e basınca hemen uygulanır |
 | Ek dosyalarının içinde de ara | `attachments` | true | – | Eklerin içeriğini oku ve ara. Kapalıysa yalnız ek adları aranır |
+| Arama bitince ilk sonuca geç | `focus_first_result` | false | – | Arama bitince odak sonuç listesindeki ilk e-postaya geçer. Arama sürerken başka bir alana geçtiyseniz ya da sorguyu değiştirdiyseniz odak değişmez |
 | Klasörleri hariç tut… | `excluded_folders` | (yok) | – | Posta kutusu kimliği → hariç tutulan klasör kimlikleri. Bir posta kutusu için kayıt yoksa varsayılan klasörler hariç tutulur (aşağıya bakın). Boş liste: hiçbir klasör hariç tutulmaz |
 | (yalnız dosyada) | `idle_timeout_s` | 300 | 30–3600 | Eklenti yanıt vermezse arama işleminin kendini kapatma süresi |
 | (yalnız dosyada) | `session_timeout_s` | 7200 | ≥ 60 | Bir aramanın en uzun süresi. Tam indekslemenin süre sınırı yoktur; 15 dakika hiç ilerleme olmazsa durur |
@@ -414,3 +455,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\HatirMail
 | Güncellemeden sonra "Okunan postalar" %0 görünüyor | İndeks sürüm 2'ye geçerken her posta bir kez yeniden okunur (ek listesi için). Var olan anlam indeksi korunur. İndeks sekmesinden indekslemeyi başlatın. |
 | Sonuçlar tutarsız ya da indeks hata veriyor | **Ayarlar** sekmesinde **İndeksi sil**'e basın, sonra İndeks sekmesinde **İndekslemeyi başlat**'a basın. |
 | Pencere yazıları kesik ya da üst üste | 0.1.0 sürümünün 15 Ekim 13:42 ve sonraki paketi yüksek DPI ekranlara (ör. %200 ölçek) uyar. Daha eski bir paket kuruluysa Outlook'u kapatın ve `install.ps1 -SkipRegistration` ile dosyaları güncelleyin. |
+| Yazılar çok küçük ya da çok büyük | Ayarlar sekmesinde **Yazı büyüklüğü**'nü değiştirip **Kaydet**'e basın. |
+| Bir kısayol çalışmıyor | Önce açık bir liste ya da menü varsa Esc ile kapatın. Mac klavyesiyle Uzak Masaüstü'nde Alt tuşu Option tuşudur. Kısayolların listesi için F1'e basın. |

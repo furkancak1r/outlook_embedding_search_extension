@@ -103,7 +103,7 @@ namespace HatirMail
 
         public void OnSearch([MarshalAs(UnmanagedType.IDispatch)] object control)
         {
-            try { ShowForm(); }
+            try { ShowForm().FocusQuery(); } // an open window comes back with the focus in the search box
             catch (Exception ex)
             {
                 MessageBox.Show("HatırMail açılamadı: " + ex.GetType().Name, "HatırMail", MessageBoxButtons.OK,
@@ -165,9 +165,13 @@ namespace HatirMail
 
         SearchForm ShowForm()
         {
-            if (form == null || form.IsDisposed)
-                form = new SearchForm(new OutlookSource(app), Settings.Load());
-            form.Show(); // a window minimized during an index run comes back
+            bool open = form != null && !form.IsDisposed;
+            // Per-monitor DPI window: made in a per-monitor context (the ribbon callback runs system-aware).
+            using (new Native.DpiScope())
+            {
+                if (!open) form = new SearchForm(new OutlookSource(app), Settings.Load());
+                form.Show(); // a window minimized during an index run comes back
+            }
             if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
             form.Activate();
             return form;
@@ -187,6 +191,8 @@ namespace HatirMail
         public int SessionTimeoutS = 7200;  // hard limit for one search (an index run has none: it stops when idle)
         public bool Attachments = true;     // read attachment content (Excel, PDF, Word, pictures with OCR, ...)
         public int KeepAliveMin = 10;       // the model stays loaded so long after the last work while the window is open (0 = no)
+        public int TextScalePct = 100;      // text size of the window (Ayarlar): 100, 125, 150, 175 or 200
+        public bool FocusFirstResult;       // after a search the focus goes to the first result (Ayarlar)
         /// <summary>Folders not indexed (Ayarlar "Klasörleri hariç tut"): store id -> folder entry ids. A checked folder
         /// excludes its subfolders too. No entry for a store: DefaultExcluded names. An empty list: nothing excluded.</summary>
         public Dictionary<string, List<string>> ExcludedFolders = new Dictionary<string, List<string>>();
@@ -236,6 +242,8 @@ namespace HatirMail
                     if (d.TryGetValue("session_timeout_s", out v)) s.SessionTimeoutS = Convert.ToInt32(v);
                     if (d.TryGetValue("attachments", out v)) s.Attachments = Convert.ToBoolean(v);
                     if (d.TryGetValue("keep_alive_min", out v)) s.KeepAliveMin = Convert.ToInt32(v);
+                    if (d.TryGetValue("text_scale_pct", out v)) s.TextScalePct = Convert.ToInt32(v);
+                    if (d.TryGetValue("focus_first_result", out v)) s.FocusFirstResult = Convert.ToBoolean(v);
                     if (d.TryGetValue("excluded_folders", out v) && v is Dictionary<string, object>)
                         foreach (var kv in (Dictionary<string, object>)v)
                             if (kv.Value is System.Collections.ArrayList) // a wrong type: that store keeps the defaults
@@ -256,7 +264,11 @@ namespace HatirMail
             IdleTimeoutS = Math.Max(30, Math.Min(3600, IdleTimeoutS));
             SessionTimeoutS = Math.Max(60, SessionTimeoutS);
             KeepAliveMin = Math.Max(0, Math.Min(120, KeepAliveMin));
+            TextScalePct = ClampTextScale(TextScalePct);
         }
+
+        /// <summary>100–200, in steps of 25 (the Ayarlar list): 130 -> 125, 999 -> 200.</summary>
+        public static int ClampTextScale(int pct) { return 100 + 25 * (int)Math.Round((Math.Max(100, Math.Min(200, pct)) - 100) / 25.0, MidpointRounding.AwayFromZero); }
 
         /// <summary>Write settings.json (Ayarlar tab). A temp file first: a failed write leaves the old file.</summary>
         public void Save()
@@ -265,7 +277,8 @@ namespace HatirMail
             var d = new Dictionary<string, object> {
                 {"threads", Threads}, {"memory_limit_mb", MemoryLimitMb}, {"search_index_budget_s", SearchIndexBudgetS},
                 {"idle_timeout_s", IdleTimeoutS}, {"session_timeout_s", SessionTimeoutS}, {"attachments", Attachments},
-                {"keep_alive_min", KeepAliveMin}, {"excluded_folders", ExcludedFolders} };
+                {"keep_alive_min", KeepAliveMin}, {"text_scale_pct", TextScalePct}, {"focus_first_result", FocusFirstResult},
+                {"excluded_folders", ExcludedFolders} };
             string tmp = ConfigFile + ".tmp";
             try
             {

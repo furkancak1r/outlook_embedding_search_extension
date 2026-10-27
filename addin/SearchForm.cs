@@ -1,10 +1,14 @@
 // HatırMail window (UI thread only; Outlook objects are touched only here) and the worker session.
 // Tabs: Ara (search), İndeks (index state, folders, full indexing started by the user), Ayarlar (settings.json).
+// Accessibility: every control has a Turkish AccessibleName and AccessibleDescription; colors are SystemColors only, and
+// high contrast follows the Windows theme while the window is open; a focus frame marks the active control; access keys
+// and shortcuts (F1 lists them); one sentence per result row for a screen reader; text size 100-200 % and per-monitor DPI.
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -20,20 +24,28 @@ namespace HatirMail
     public class SearchForm : Form
     {
         static readonly CultureInfo TR = CultureInfo.GetCultureInfo("tr-TR");
-        static readonly Color Accent = Color.FromArgb(0, 114, 198), AccentDark = Color.FromArgb(0, 90, 158),
-                              MarkColor = Color.FromArgb(255, 226, 110), Warn = Color.FromArgb(166, 77, 0),
-                              Good = Color.FromArgb(16, 124, 16);
-        static readonly bool Plain = SystemInformation.HighContrast; // high-contrast themes keep the system colors
         public static float TestScale; // test hook: > 0 simulates a high-DPI screen (sizes and fonts x TestScale) on a 96-DPI screen
+        /// <summary>Test hook: null = the Windows setting; true or false simulates a high-contrast theme.</summary>
+        public static bool? HighContrastOverride;
+        /// <summary>Read at each use: the window follows a theme change while it is open (OnSystemColorsChanged).</summary>
+        static bool HC { get { return HighContrastOverride ?? SystemInformation.HighContrast; } }
 
         readonly IMailSource source;
         readonly Settings settings;
-        readonly float k, pt;
-        readonly Font titleFont, boldFont;
+        // k: 96-DPI pixels -> pixels of this window; pt: font points. Both = DPI factor x text size (Ayarlar). dpi: the DPI
+        // of this window (WM_DPICHANGED); textPct: the text size in use.
+        float k, pt;
+        int dpi, textPct;
+        Font titleFont, boldFont;
+        bool scaling, ringQueued;
         readonly Panel root = new Panel { Dock = DockStyle.Fill };
+        readonly Panel header = new Panel { Dock = DockStyle.Top }, bar = new Panel { Dock = DockStyle.Bottom }, rule = new Panel { Dock = DockStyle.Bottom };
+        readonly Label title = new Label { Text = "HatırMail", AutoSize = true, Dock = DockStyle.Top }, subtitle = new Label { AutoSize = true, Dock = DockStyle.Top };
+        readonly FocusFrame ring = new FocusFrame();
         readonly TabControl tabs = new TabControl();
         readonly TabPage tabSearch = new TabPage("Ara"), tabIndex = new TabPage("İndeks"), tabSettings = new TabPage("Ayarlar");
         // Ara
+        readonly TableLayoutPanel qrow = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 5, RowCount = 1, AutoSize = true };
         readonly TextBox query = new TextBox();
         readonly Button searchBtn, stopBtn, openBtn, historyBtn;
         readonly ContextMenuStrip historyMenu = new ContextMenuStrip { ShowItemToolTips = true };
@@ -47,15 +59,18 @@ namespace HatirMail
         // date_from / date_to (ISO local time, to = exclusive) and attach.
         readonly ComboBox dateBox = new ComboBox(), attFilterBox = new ComboBox();
         readonly DateTimePicker dateFrom = new DateTimePicker(), dateTo = new DateTimePicker();
-        readonly TableLayoutPanel filterTable;
+        readonly TableLayoutPanel filterTable = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 6, RowCount = 3 };
+        readonly List<Label> filterLabels = new List<Label>();
+        readonly Control[] filterFields;
         readonly List<Control> rangeRow = new List<Control>(); // the third filter row: only for "Özel aralık…"
         readonly Button clearFiltersBtn;
-        bool fillingFilters;
-        readonly ListView list = new ListView();
+        bool fillingFilters, dateOpen;
+        readonly ResultList list = new ResultList();
         readonly ContextMenuStrip resultMenu = new ContextMenuStrip();
         static readonly string[] ResultColumns = { "Konu", "Kişi", "Tarih", "Güven", "Neden" };
         int sortCol = 3; bool sortDesc = true; // 3 "Güven" descending = the worker's order (relevance); kept for new results
         Action repeatLast; // the last search or "Benzerlerini bul" that started; null = none yet (result menu)
+        string searchedText; // the query box text at the start of the last search (first-result focus); null = no move
         readonly RichTextBox preview = new RichTextBox();
         readonly Panel previewBox = new Panel();                         // the attachment bar and the preview
         readonly TableLayoutPanel attBar = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 1, AutoSize = true, Visible = false };
@@ -67,12 +82,14 @@ namespace HatirMail
         // İndeks
         readonly ComboBox storeBox = new ComboBox();
         readonly ListView folderList = new ListView();
+        readonly TableLayoutPanel grid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 3, RowCount = 3, AutoSize = true };
         readonly ProgressBar barRead = new ProgressBar(), barSem = new ProgressBar(), barAtt = new ProgressBar();
         readonly Label pctRead = new Label(), pctSem = new Label(), pctAtt = new Label(), phase = new Label();
         readonly Button indexBtn, updateBtn, indexStopBtn, refreshBtn;
         // Ayarlar
         readonly NumericUpDown numThreads = new NumericUpDown(), numMemory = new NumericUpDown(), numBudget = new NumericUpDown(), numKeep = new NumericUpDown();
-        readonly CheckBox chkAtt = new CheckBox();
+        readonly ComboBox textSizeBox = new ComboBox();
+        readonly CheckBox chkAtt = new CheckBox(), chkFirst = new CheckBox();
         readonly Button saveBtn, defaultsBtn, deleteBtn, excludeBtn;
         // Status bar
         readonly Label status = new Label(), summary = new Label();
@@ -102,60 +119,90 @@ namespace HatirMail
         public event Action<string, string> SessionFinished; // test hook: (mode, reason)
         public event Action<string, int> WorkerStarted;      // test hook: (mode, worker process id)
 
+        /// <summary>The shortcuts that are not an access key of a control (F1 list). The access keys (Alt+letter) are read
+        /// from the controls, so the list cannot miss one.</summary>
+        public static readonly string[][] Shortcuts = {
+            new[] { "Ctrl+F", "Arama kutusuna gider." },
+            new[] { "Esc", "Arama kutusuna döner." },
+            new[] { "F1", "Bu listeyi açar." },
+            new[] { "Tab, Shift+Tab", "Sonraki ya da önceki alana geçer." },
+            new[] { "Ctrl+Tab, Ctrl+Shift+Tab", "Sonraki ya da önceki sekmeyi açar." },
+            new[] { "Alt+A, Alt+İ, Alt+Y", "Ara, İndeks ya da Ayarlar sekmesini açar." },
+            new[] { "Enter (arama kutusunda)", "Aramayı başlatır." },
+            new[] { "Enter (sonuç listesinde)", "Seçili e-postayı Outlook'ta açar." },
+            new[] { "Shift+F10, Menü tuşu (sonuç listesinde)", "Seçili e-postanın menüsünü açar." },
+            new[] { "Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4, Ctrl+5", "Sonuçları Konu, Kişi, Tarih, Güven ya da Neden sütununa göre sıralar. Yeniden basınca sıra döner." },
+            new[] { "Alt+Aşağı ok (bir listede)", "Listeyi açar. Gönderen, Alıcı ve Klasör listelerinde yazarak arayabilirsiniz." } };
+        static readonly char[] TabKeys = { 'A', 'İ', 'Y' }; // Alt+A Ara, Alt+İ İndeks, Alt+Y Ayarlar (a TabControl shows "&" as text)
+
         public SearchForm(IMailSource source, Settings settings)
         {
             this.source = source;
             this.settings = settings;
-            // Sizes below are 96-DPI pixels; S() converts them to the screen DPI. Outlook is DPI-aware, so Windows does
-            // not stretch this window, and fonts (in points) follow the DPI already. No WinForms auto-scaling: in a 2x
-            // test it scaled a label in a nested panel 4x. ponytail: one DPI per window (system DPI); a move to a
-            // monitor with another DPI keeps the size. Upgrade path: handle WM_DPICHANGED.
-            k = TestScale > 0 ? TestScale : ScreenDpi() / 96F;
-            pt = TestScale > 0 ? TestScale : 1F;
+            // Sizes below are 96-DPI pixels; S() converts them to this window: DPI x text size (Ayarlar "Yazı büyüklüğü").
+            // Fonts in points follow the system DPI already, so pt = window DPI / system DPI x text size. No WinForms
+            // auto-scaling: in a 2x test it scaled a label in a nested panel 4x. A new DPI (a monitor with another DPI:
+            // WM_DPICHANGED) or a new text size scales the open window (ApplyScale).
+            float sys = TestScale > 0 ? 96 * TestScale : ScreenDpi();
+            dpi = (int)Math.Round(sys);
+            textPct = settings.TextScalePct;
+            k = sys / 96F * textPct / 100F;
+            pt = (TestScale > 0 ? TestScale : 1F) * textPct / 100F;
             Text = "HatırMail";
-            Width = S(1040); Height = S(720); MinimumSize = new Size(S(820), S(560));
             Font = new Font("Segoe UI", 9f * pt);
             titleFont = new Font("Segoe UI Semibold", 11.5f * pt);
-            boldFont = new Font("Segoe UI", 9f * pt, Plain ? FontStyle.Bold | FontStyle.Underline : FontStyle.Bold);
+            boldFont = new Font("Segoe UI", 9f * pt, FontStyle.Bold);
+            Width = S(1040); Height = S(720); MinimumSize = new Size(S(820), S(560)); AutoScroll = true; // FitToScreen
             StartPosition = FormStartPosition.CenterScreen;
-            int line = TextRenderer.MeasureText("Ag", Font).Height;
 
-            searchBtn = MakeButton("&Ara", true); stopBtn = MakeButton("D&urdur", false); openBtn = MakeButton("Outlook'ta A&ç", false);
-            historyBtn = MakeButton("Ara&malar ▼", false); openAttBtn = MakeButton("&Eki aç", false);
-            indexBtn = MakeButton("İndekslemeyi &başlat", true); updateBtn = MakeButton("&Güncelle", false); indexStopBtn = MakeButton("&Durdur", false);
-            refreshBtn = MakeButton("Durumu &yenile", false);
-            saveBtn = MakeButton("&Kaydet", true); defaultsBtn = MakeButton("&Varsayılan değerler", false);
-            deleteBtn = MakeButton("İndeksi &sil", false); excludeBtn = MakeButton("Klasörleri &hariç tut…", false);
-            clearFiltersBtn = MakeButton("&Filtreleri temizle", false);
+            searchBtn = MakeButton("A&ra", true, "Aramayı başlatır. Kısayol: Alt+R.");
+            stopBtn = MakeButton("D&urdur", false, "Çalışan aramayı durdurur. Yapılan iş kaydedilir. Kısayol: Alt+U.");
+            openBtn = MakeButton("Outlook'ta A&ç", false, "Seçili e-postayı Outlook'ta açar. Kısayol: Alt+Ç.");
+            historyBtn = MakeButton("Ara&malar ▼", false, "Son ve kayıtlı aramaların menüsünü açar. Kısayol: Alt+M.");
+            openAttBtn = MakeButton("&Eki aç", false, "Eşleşen eki açar. Kısayol: Alt+E.");
+            indexBtn = MakeButton("İndekslemeyi &başlat", true, "İşaretli klasörlerin tam indekslemesini başlatır ya da kaldığı yerden sürdürür. Kısayol: Alt+B.");
+            updateBtn = MakeButton("&Güncelle", false, "Yalnız son indekslemeden sonra gelen, değişen, taşınan ve silinen postaları işler. Kısayol: Alt+G.");
+            indexStopBtn = MakeButton("&Durdur", false, "Çalışan indekslemeyi ya da güncellemeyi durdurur. Yapılan iş kaydedilir. Kısayol: Alt+D.");
+            refreshBtn = MakeButton("Durumu yenil&e", false, "İndeks durumunu yeniden okur. Kısayol: Alt+E.");
+            saveBtn = MakeButton("&Kaydet", true, "Ayarları kaydeder. Yazı büyüklüğü hemen uygulanır. Kısayol: Alt+K.");
+            defaultsBtn = MakeButton("&Varsayılan değerler", false, "Alanlara varsayılan değerleri yazar. Kaydetmek için Kaydet'e basın. Kısayol: Alt+V.");
+            deleteBtn = MakeButton("İndeksi &sil", false, "Bu bilgisayardaki arama indeksini onaydan sonra siler. Kısayol: Alt+S.");
+            excludeBtn = MakeButton("Klasörleri &hariç tut…", false, "İndekslenmeyecek ve aranmayacak klasörleri seçin. Kısayol: Alt+H.");
+            clearFiltersBtn = MakeButton("&Filtreleri temizle", false, "Bütün filtreleri kaldırır. Kısayol: Alt+F.");
+            stopBtn.AccessibleName = "Aramayı durdur"; indexStopBtn.AccessibleName = "İndekslemeyi durdur";
 
             // Header band
-            var title = new Label { Text = "HatırMail", AutoSize = true, Dock = DockStyle.Top, Font = new Font("Segoe UI Semibold", 15f * pt), UseCompatibleTextRendering = false,
-                                    ForeColor = Plain ? SystemColors.ControlText : Color.White };
-            var subtitle = new Label { AutoSize = true, Dock = DockStyle.Top, UseCompatibleTextRendering = false, ForeColor = Plain ? SystemColors.ControlText : Color.FromArgb(222, 236, 249),
-                                       Text = "Hatırladığınız birkaç ayrıntıyı yazın; e-postayı bulun ve Outlook'ta açın. Her şey bu bilgisayarda çalışır." };
-            var header = new Panel { Dock = DockStyle.Top, BackColor = Plain ? SystemColors.Control : Accent, Padding = new Padding(S(16), S(8), S(16), S(10)) };
-            header.Height = header.Padding.Vertical + title.PreferredHeight + subtitle.PreferredHeight + S(2);
+            title.Font = new Font("Segoe UI Semibold", 15f * pt);
+            subtitle.Text = "Hatırladığınız birkaç ayrıntıyı yazın; e-postayı bulun ve Outlook'ta açın. Her şey bu bilgisayarda çalışır.";
+            Wrap(subtitle); // large text on a small screen: two lines, not cut
             header.Controls.Add(subtitle); header.Controls.Add(title);
+            subtitle.SizeChanged += (s, e) => FitHeader();
 
             // Status bar: the current work on the left, the index summary on the right
-            var bar = new Panel { Dock = DockStyle.Bottom, Height = line + S(12), Padding = new Padding(S(12), S(4), S(12), S(4)) };
             status.Dock = DockStyle.Fill; status.AutoEllipsis = true; status.TextAlign = ContentAlignment.MiddleLeft;
             summary.Dock = DockStyle.Right; summary.AutoSize = true; summary.TextAlign = ContentAlignment.MiddleRight;
-            summary.Padding = new Padding(S(12), 0, 0, 0);
-            progress.Dock = DockStyle.Right; progress.Width = S(160); progress.Visible = false;
+            progress.Dock = DockStyle.Right; progress.Visible = false;
             bar.Controls.Add(status); bar.Controls.Add(progress); bar.Controls.Add(summary);
-            var rule = new Panel { Dock = DockStyle.Bottom, Height = Math.Max(1, S(1)), BackColor = SystemColors.ControlDark };
 
-            tabs.Dock = DockStyle.Fill; tabs.Padding = new Point(S(14), S(5));
+            // ponytail: the tab padding is set once (a new value later makes a new tab window and all its child windows);
+            // after a scale change the tab headers keep this padding, the text still fits (tab width = text + padding).
+            tabs.Dock = DockStyle.Fill; tabs.Padding = new Point(S(14), S(5)); tabs.ShowToolTips = true; tabs.AccessibleName = "Sekmeler";
+            tabs.AccessibleDescription = "Ara, İndeks ve Ayarlar sekmeleri. Ctrl+Tab sonraki sekmeyi açar.";
             tabs.TabPages.Add(tabSearch); tabs.TabPages.Add(tabIndex); tabs.TabPages.Add(tabSettings);
-            foreach (TabPage p in tabs.TabPages) { p.Padding = new Padding(S(12)); p.UseVisualStyleBackColor = true; }
+            var tabHelp = new[] { "Arama, filtreler ve sonuçlar.", "İndeks durumu, klasörler ve indeksleme.", "Ayarlar ve indekslenmeyecek klasörler." };
+            for (int i = 0; i < 3; i++)
+            {
+                var p = tabs.TabPages[i];
+                p.UseVisualStyleBackColor = true; p.AccessibleName = p.Text;
+                p.ToolTipText = "Alt+" + TabKeys[i]; p.AccessibleDescription = tabHelp[i] + " Kısayol: Alt+" + TabKeys[i] + ".";
+            }
 
-            // ---- Ara: query row, hint, scope line, results, preview
-            var qrow = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 5, RowCount = 1, AutoSize = true };
+            // ---- Ara: query row, hint, filters, scope line, results, preview
             qrow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             for (int i = 0; i < 4; i++) qrow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             query.Font = new Font("Segoe UI", 12f * pt); query.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             query.Margin = new Padding(0, S(3), S(6), S(3)); query.AccessibleName = "Arama metni";
+            query.AccessibleDescription = "Hatırladığınız ayrıntıları yazın ve Enter'a basın. Kısayol: Ctrl+F.";
             query.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; StartSearch(); } };
             // Suggestions while typing: the Windows autocomplete list (prefix match) with recent and saved searches.
             history = SearchHistory.Load(settings.Data);
@@ -170,21 +217,19 @@ namespace HatirMail
             var hint = Wrap(new Label { ForeColor = SystemColors.GrayText, Padding = new Padding(0, S(4), 0, 0),
                                         Text = "İpucu: kişi, konu, yaklaşık tarih ya da ekteki bir sözcük yazın. Örnek: geçen ay Ahmet'ten gelen kargo faturası" });
             // Filters: one table, so that the fields line up in three columns of the same width. "(tümü)" = no filter; a
-            // change applies at the next Ara.
+            // change applies at the next Ara. Sizes: Measure.
             //   Gönderen  [list]   Alıcı [list]   Klasör [list]
             //   Tarih     [list]   Ek    [list]           [Filtreleri temizle]
             //   Başlangıç [date]   Bitiş [date]     (this row only for "Özel aralık…")
-            // The table lays out a list with the height of a new list (default font), centered in the row; Windows then
-            // makes the list taller (window font), and the row cut it at the bottom (2.19, 2x test: 22 px in the table, 40
-            // px on screen). So: fixed row heights from the real control heights (after Add: the font of the table), and
-            // each field starts at a fixed distance from the row top. The label columns have a fixed width: the fields do
-            // not move when the third row shows. The table height is set, not AutoSize: FilterChanged adds the third row.
-            filterTable = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 6, RowCount = 3, Padding = new Padding(0, S(4), 0, 0), Font = Font };
-            var cells = new[] { Tuple.Create("Gö&nderen:", (Control)senderBox, "Gönderen filtresi"), Tuple.Create("A&lıcı:", (Control)recipientBox, "Alıcı filtresi"),
-                                Tuple.Create("Kla&sör:", (Control)folderBox, "Klasör filtresi"), Tuple.Create("&Tarih:", (Control)dateBox, "Tarih filtresi"),
-                                Tuple.Create("E&k:", (Control)attFilterBox, "Ek filtresi"), Tuple.Create("", (Control)clearFiltersBtn, ""),
-                                Tuple.Create("Başlangıç:", (Control)dateFrom, "Tarih filtresi: başlangıç"), Tuple.Create("Bitiş:", (Control)dateTo, "Tarih filtresi: bitiş (dahil)") };
-            var labelW = new int[3];
+            var cells = new[] {
+                Tuple.Create("Gö&nderen:", (Control)senderBox, "Gönderen filtresi", "Yalnız bu kişinin gönderdiği e-postaları arar. Liste açılınca ad yazarak arayabilirsiniz. Kısayol: Alt+N."),
+                Tuple.Create("A&lıcı:", (Control)recipientBox, "Alıcı filtresi", "Yalnız bu kişiye giden e-postaları arar. Liste açılınca ad yazarak arayabilirsiniz. Kısayol: Alt+L."),
+                Tuple.Create("Kla&sör:", (Control)folderBox, "Klasör filtresi", "Yalnız işaretli klasörlerde arar. Birden çok klasör seçebilirsiniz. Kısayol: Alt+S."),
+                Tuple.Create("&Tarih:", (Control)dateBox, "Tarih filtresi", "Yalnız bu tarih aralığındaki e-postaları arar. Kısayol: Alt+T."),
+                Tuple.Create("E&k:", (Control)attFilterBox, "Ek filtresi", "Eki olan, olmayan ya da bir türde eki olan e-postaları arar. Kısayol: Alt+K."),
+                Tuple.Create("", (Control)clearFiltersBtn, "", ""),
+                Tuple.Create("&Başlangıç:", (Control)dateFrom, "Başlangıç tarihi", "Özel aralığın ilk günü. Kısayol: Alt+B."),
+                Tuple.Create("Biti&ş:", (Control)dateTo, "Bitiş tarihi", "Özel aralığın son günü. Bu gün de aralığa dahildir. Kısayol: Alt+Ş.") };
             for (int i = 0; i < cells.Length; i++)
             {
                 int row = i / 3, col = i % 3 * 2;
@@ -192,17 +237,18 @@ namespace HatirMail
                 c.Anchor = c is Button ? AnchorStyles.Right | AnchorStyles.Top : AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
                 if (cells[i].Item1.Length > 0)
                 {
-                    // GDI text now (as at the end of this constructor): the column width comes from this measure.
-                    var l = new Label { Text = cells[i].Item1, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(col == 0 ? 0 : S(14), 0, S(6), 0), UseCompatibleTextRendering = false };
+                    var l = new Label { Text = cells[i].Item1, AutoSize = true, Anchor = AnchorStyles.Left };
                     filterTable.Controls.Add(l, col, row);
-                    labelW[col / 2] = Math.Max(labelW[col / 2], l.PreferredWidth + l.Margin.Horizontal);
-                    c.AccessibleName = cells[i].Item3;
+                    filterLabels.Add(l);
+                    c.AccessibleName = cells[i].Item3; c.AccessibleDescription = cells[i].Item4;
                     if (row == 2) rangeRow.Add(l);
                 }
                 filterTable.Controls.Add(c, col + 1, row);
                 if (row == 2) rangeRow.Add(c);
             }
-            foreach (int w in labelW) { filterTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, w)); filterTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.3F)); }
+            filterFields = cells.Select(x => x.Item2).ToArray();
+            for (int i = 0; i < 3; i++) { filterTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0)); filterTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.3F)); }
+            for (int i = 0; i < 3; i++) filterTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 0)); // Measure and FilterRows set the heights
             foreach (var box in AllFilterBoxes)
             {
                 box.DropDownStyle = ComboBoxStyle.DropDownList; box.MaxDropDownItems = 20;
@@ -212,15 +258,14 @@ namespace HatirMail
                 dateBox.Items.Add(new Choice { Key = c.Split('|')[0], Text = c.Split('|')[1] });
             foreach (var c in new[] { "yes|Ekli", "no|Eksiz", "excel|Excel", "pdf|PDF", "word|Word", "powerpoint|PowerPoint", "image|Resim", "archive|Zip, RAR" })
                 attFilterBox.Items.Add(new Choice { Key = c.Split('|')[0], Text = c.Split('|')[1] });
-            foreach (var p in new[] { dateFrom, dateTo }) { p.Format = DateTimePickerFormat.Custom; p.CustomFormat = "dd.MM.yyyy"; }
+            foreach (var p in new[] { dateFrom, dateTo })
+            {
+                p.Format = DateTimePickerFormat.Custom; p.CustomFormat = "dd.MM.yyyy";
+                p.DropDown += (s, e) => dateOpen = true; p.CloseUp += (s, e) => dateOpen = false; // Esc closes the calendar first
+            }
             dateFrom.Value = DateTime.Today.AddMonths(-1); dateTo.Value = DateTime.Today;
-            clearFiltersBtn.Padding = new Padding(S(10), 0, S(10), 0); clearFiltersBtn.Enabled = false; // as high as a list
-            int rowH = new[] { senderBox.PreferredHeight, dateFrom.PreferredHeight, clearFiltersBtn.PreferredSize.Height }.Max() + S(6);
-            foreach (var c in cells.Select(x => x.Item2))
-                c.Margin = new Padding(0, (rowH - (c is ComboBox ? ((ComboBox)c).PreferredHeight : c is DateTimePicker ? ((DateTimePicker)c).PreferredHeight : c.PreferredSize.Height)) / 2, 0, 0);
-            foreach (int h in new[] { rowH, rowH, 0 }) filterTable.RowStyles.Add(new RowStyle(SizeType.Absolute, h)); // FilterChanged sets row 3
+            clearFiltersBtn.Enabled = false;
             foreach (var c in rangeRow) c.Visible = false;
-            filterTable.Height = filterTable.Padding.Vertical + 2 * rowH;
             // The start values above are not a user change: the handlers come after them.
             foreach (var box in AllFilterBoxes) { box.SelectedIndex = 0; box.SelectedIndexChanged += (s, e) => FilterChanged(); }
             folderBox.CheckedChanged += (s, e) => FilterChanged();
@@ -230,19 +275,30 @@ namespace HatirMail
             scopeLine.Cursor = Cursors.Hand; scopeLine.Click += (s, e) => tabs.SelectedTab = tabIndex;
             list.Dock = DockStyle.Fill; list.View = View.Details; list.FullRowSelect = true; list.MultiSelect = false;
             list.HideSelection = false; list.AccessibleName = "Sonuçlar";
+            list.AccessibleDescription = "Bulunan e-postalar. Her satır tek cümle okunur. Enter açar, Shift+F10 menüyü açar, Ctrl+1 ile Ctrl+5 sıralar.";
             // "Neden" fits its longest form ("kelime 1/2, anlam 0.61, ekte, tarih dışı"); Konu takes the rest.
             // "Güven" is wider than its texts: the sort arrow (▲/▼) is part of the header text.
             var widths = new[] { 300, 140, 115, 80, 265 };
             for (int i = 0; i < ResultColumns.Length; i++) list.Columns.Add(ResultColumns[i], S(widths[i]));
+            // Owner drawn: the row text (what a screen reader reads) is one sentence; the cells show the columns (DrawCell).
+            list.OwnerDraw = true;
+            list.DrawColumnHeader += (s, e) => e.DrawDefault = true;
+            list.DrawItem += (s, e) => { }; // Details view: DrawSubItem draws each cell
+            list.DrawSubItem += DrawCell;
+            // ponytail: an owner-drawn full-row list can repaint only the first cell under the mouse; the row is painted again.
+            list.MouseMove += (s, e) => { var it = list.GetItemAt(e.X, e.Y); if (it != null) list.Invalidate(it.Bounds); };
+            list.GotFocus += (s, e) => list.Invalidate(); list.LostFocus += (s, e) => list.Invalidate(); // selection colors, row frame
             list.Resize += (s, e) => FitColumns(list);
             list.SelectedIndexChanged += (s, e) => ShowPreview();
             list.DoubleClick += (s, e) => OpenSelected();
-            list.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) OpenSelected(); };
+            // KeyDown comes with the message to the list (no pre-translation needed): it works in the Outlook message loop.
+            list.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter && e.Modifiers == Keys.None) { e.Handled = true; OpenSelected(); } };
             // A click on a column header sorts by it; a second click turns the order. Güven = the worker's order.
             list.ColumnClick += (s, e) => HeaderClick(e.Column);
             list.ListViewItemSorter = new ResultOrder(this);
             ShowSortArrow();
-            // Right-click on a result: open, open the attachment, copy the subject, filter by its sender.
+            // Right-click on a result (or Shift+F10, the menu key: ResultList): open, open the attachment, copy the subject,
+            // filter by its sender.
             resultMenu.Font = Font;
             resultMenu.Items.Add("Outlook'ta &aç", null, (s, e) => OpenSelected());
             resultMenu.Items.Add("&Eki aç", null, (s, e) => OpenAttachment());
@@ -258,22 +314,21 @@ namespace HatirMail
             list.ContextMenuStrip = resultMenu;
             Disposed += (s, e) => resultMenu.Dispose();
             // Plain text only (never RTF from a mail), read-only, no links.
-            preview.Dock = DockStyle.Bottom; preview.Height = S(190); preview.ReadOnly = true; preview.DetectUrls = false;
+            preview.Dock = DockStyle.Fill; preview.ReadOnly = true; preview.DetectUrls = false;
             preview.BorderStyle = BorderStyle.FixedSingle; preview.BackColor = SystemColors.Window; preview.AccessibleName = "Önizleme";
+            preview.AccessibleDescription = "Seçili e-postanın eşleşen bölümü. Aranan sözcükler kalın yazılır.";
             preview.ScrollBars = RichTextBoxScrollBars.Vertical;
             // Above the preview, only for a match inside an attachment: "Eki aç" + "Ekte bulundu: name › member".
             attBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); attBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             attBar.Padding = new Padding(0, 0, 0, S(4));
-            attLine.AutoSize = false; attLine.AutoEllipsis = true; attLine.Height = line; attLine.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-            attLine.Font = boldFont; attLine.ForeColor = Plain ? SystemColors.ControlText : AccentDark; attLine.TextAlign = ContentAlignment.MiddleLeft;
+            attLine.AutoSize = false; attLine.AutoEllipsis = true; attLine.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            attLine.Font = boldFont; attLine.TextAlign = ContentAlignment.MiddleLeft;
             attBar.Controls.Add(openAttBtn, 0, 0); attBar.Controls.Add(attLine, 1, 0);
             openAttBtn.Click += (s, e) => OpenAttachment();
-            preview.Dock = DockStyle.Fill;
             // 160 (was 190): the filter row takes its place, the result list keeps its height.
             previewBox.Dock = DockStyle.Bottom; previewBox.Height = previewWant = S(160);
             previewBox.Controls.Add(preview); previewBox.Controls.Add(attBar);
-            attBar.TabIndex = 0; preview.TabIndex = 1;
-            qrow.TabIndex = 0; filterTable.TabIndex = 1; list.TabIndex = 2; previewBox.TabIndex = 3;
+            Order(attBar, preview);
             var split = new Splitter { Dock = DockStyle.Bottom, Height = S(6), TabStop = false };
             split.SplitterMoved += (s, e) => previewWant = previewBox.Height; // the user's preview height
             // The result list keeps room for its header and 3 rows: in a small window, or with the date row of the
@@ -283,6 +338,7 @@ namespace HatirMail
             tabSearch.Controls.Add(list); tabSearch.Controls.Add(split);
             tabSearch.Controls.Add(previewBox); tabSearch.Controls.Add(scopeLine); tabSearch.Controls.Add(hint); tabSearch.Controls.Add(filterTable);
             tabSearch.Controls.Add(qrow);
+            Order(qrow, hint, filterTable, scopeLine, list, split, previewBox); // the order on the screen, top to bottom
             Launch = path => { using (Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, ErrorDialog = true, ErrorDialogParentHandle = Handle })) { } };
 
             // ---- İndeks: store, bars, live phase, start/stop, folders with their state
@@ -290,10 +346,11 @@ namespace HatirMail
             srow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); srow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             srow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             storeBox.DropDownStyle = ComboBoxStyle.DropDownList; storeBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-            storeBox.AccessibleName = "Posta kutusu"; storeBox.SelectedIndexChanged += (s, e) => LoadFolders();
-            srow.Controls.Add(new Label { Text = "Posta kutusu:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, S(6), 0) }, 0, 0);
+            storeBox.AccessibleName = "Posta kutusu"; storeBox.AccessibleDescription = "Aranacak ve indekslenecek posta kutusu. Kısayol: Alt+P.";
+            storeBox.SelectedIndexChanged += (s, e) => LoadFolders();
+            srow.Controls.Add(new Label { Text = "&Posta kutusu:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, S(6), 0) }, 0, 0);
             srow.Controls.Add(storeBox, 1, 0); srow.Controls.Add(refreshBtn, 2, 0);
-            var grid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 3, RowCount = 3, AutoSize = true, Padding = new Padding(0, S(8), 0, S(4)) };
+            grid.Padding = new Padding(0, S(8), 0, S(4));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, S(250)));
             BarRow(grid, 0, "Okunan postalar", barRead, pctRead);
@@ -301,15 +358,15 @@ namespace HatirMail
             BarRow(grid, 2, "Ek dosyaları", barAtt, pctAtt);
             Wrap(phase); phase.Padding = new Padding(0, S(4), 0, S(6)); phase.Font = boldFont; phase.Text = "İndeksleme çalışmıyor.";
             var brow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = false };
-            updateBtn.AccessibleDescription = "Yalnız son indekslemeden sonra gelen, değişen, taşınan ve silinen postaları işler";
             brow.Controls.Add(indexBtn); brow.Controls.Add(updateBtn); brow.Controls.Add(indexStopBtn);
             var note = Wrap(new Label { ForeColor = SystemColors.GrayText, Padding = new Padding(0, S(2), 0, S(8)),
                                         Text = "Tam indeksleme uzun sürebilir; bu sırada Outlook'u kullanabilirsiniz. Durdurursanız yapılan iş kaydedilir ve sonra kaldığı yerden sürer. Outlook kapanınca indeksleme de durur. " +
                                                "Güncelle yalnız son indekslemeden sonra gelen, değişen, taşınan ve silinen postaları işler." });
             var flabel = Wrap(new Label { Padding = new Padding(0, 0, 0, S(4)),
-                                          Text = "Klasörler (işaretli klasörler aranır ve indekslenir; Ayarlar'da hariç tutulan klasörler bu listede yoktur):" });
+                                          Text = "&Klasörler (işaretli klasörler aranır ve indekslenir; Ayarlar'da hariç tutulan klasörler bu listede yoktur):" });
             folderList.Dock = DockStyle.Fill; folderList.View = View.Details; folderList.CheckBoxes = true; folderList.FullRowSelect = true;
             folderList.HideSelection = false; folderList.AccessibleName = "Klasörler";
+            folderList.AccessibleDescription = "İşaretli klasörler aranır ve indekslenir. Boşluk tuşu işareti değiştirir. Kısayol: Alt+K.";
             folderList.Columns.Add("Klasör", S(330));
             foreach (var c in new[] { "Posta", "Okunan", "Anlam", "Ekler" }) folderList.Columns.Add(c, S(c == "Ekler" ? 110 : 80), HorizontalAlignment.Right);
             folderList.Columns.Add("Son tarama", S(130));
@@ -318,9 +375,9 @@ namespace HatirMail
             // styles): some items are not there yet (Outlook, 16 Oct: NullReferenceException). The summary runs once,
             // after that message. A running search or index run keeps the folder scope of its start.
             folderList.ItemChecked += (s, e) => { if (!loadingFolders) QueueSummary(); }; // the summary also rebuilds the folder filter
-            srow.TabIndex = 0; brow.TabIndex = 1; folderList.TabIndex = 2;
             tabIndex.Controls.Add(folderList); tabIndex.Controls.Add(flabel); tabIndex.Controls.Add(note); tabIndex.Controls.Add(brow);
             tabIndex.Controls.Add(phase); tabIndex.Controls.Add(grid); tabIndex.Controls.Add(srow);
+            Order(srow, grid, phase, brow, note, flabel, folderList);
 
             // ---- Ayarlar: saved to settings.json
             var sgrid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, AutoSize = true };
@@ -329,29 +386,42 @@ namespace HatirMail
             numMemory.Minimum = 2048; numMemory.Maximum = 32768; numMemory.Increment = 512;
             numBudget.Minimum = 0; numBudget.Maximum = 600; numBudget.Increment = 5;
             numKeep.Minimum = 0; numKeep.Maximum = 120;
-            SettingRow(sgrid, 0, "İşlemci çekirdeği:", numThreads, string.Format(TR,
+            SettingRow(sgrid, 0, "İşlemci &çekirdeği:", numThreads, string.Format(TR,
                 "1–16. Bu bilgisayarda {0} mantıksal çekirdek var. Çok çekirdek indekslemeyi hızlandırır ama Outlook'u yavaşlatabilir.",
                 Environment.ProcessorCount));
-            SettingRow(sgrid, 1, "Bellek sınırı (MB):", numMemory, "Arama işlemi bu sınırı aşarsa kapatılır. Yapay zekâ modeliyle indeksleme 4 çekirdekte en çok yaklaşık 2.400 MB, 16 çekirdekte yaklaşık 3.400 MB kullanır.");
-            SettingRow(sgrid, 2, "Aramada indeksleme (sn):", numBudget,
+            SettingRow(sgrid, 1, "Bellek sı&nırı (MB):", numMemory, "Arama işlemi bu sınırı aşarsa kapatılır. Yapay zekâ modeliyle indeksleme 4 çekirdekte en çok yaklaşık 2.400 MB, 16 çekirdekte yaklaşık 3.400 MB kullanır.");
+            SettingRow(sgrid, 2, "Ara&mada indeksleme (sn):", numBudget,
                 "Ara'ya bastığınızda yeni postaları indekslemek için en çok bu kadar beklenir; kalan iş sonraki aramaya ya da İndeks sekmesine kalır. 0: aramada indeksleme yok.");
-            SettingRow(sgrid, 3, "Yapay zekâyı hazır tut (dk):", numKeep,
+            SettingRow(sgrid, 3, "Yapay &zekâyı hazır tut (dk):", numKeep,
                 "Pencere açıkken model son işten sonra bu kadar dakika bellekte kalır; sonraki arama beklemeden çalışır. Pencere kapanınca model de kapanır. 0: her aramada yeniden yüklenir.");
-            chkAtt.Text = "Ek dosyalarının içinde de ara (Excel, PDF, Word, PowerPoint, resimler ve taranmış belgeler için OCR, zip…)";
-            chkAtt.AutoSize = true; chkAtt.Margin = new Padding(0, S(10), 0, S(10));
-            sgrid.Controls.Add(chkAtt, 0, 8); sgrid.SetColumnSpan(chkAtt, 2);
+            textSizeBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            foreach (int p in new[] { 100, 125, 150, 175, 200 }) textSizeBox.Items.Add("%" + p);
+            SettingRow(sgrid, 4, "Yazı &büyüklüğü:", textSizeBox,
+                "Penceredeki yazıların ve alanların büyüklüğü (%100–%200). Kaydet'e basınca hemen uygulanır.");
+            chkAtt.Text = "Ek &dosyalarının içinde de ara (Excel, PDF, Word, PowerPoint, resimler ve taranmış belgeler için OCR, zip…)";
+            chkAtt.AutoSize = true; chkAtt.Margin = new Padding(0, S(10), 0, S(4)); chkAtt.AccessibleName = "Ek dosyalarının içinde de ara";
+            chkAtt.AccessibleDescription = "Excel, PDF, Word, PowerPoint, resim ve zip eklerinin içindeki metni de arar. Kısayol: Alt+D.";
+            chkFirst.Text = "Arama bitince i&lk sonuca geç";
+            chkFirst.AutoSize = true; chkFirst.Margin = new Padding(0, S(4), 0, S(10)); chkFirst.AccessibleName = "Arama bitince ilk sonuca geç";
+            chkFirst.AccessibleDescription = "Arama bitince odak sonuç listesindeki ilk e-postaya geçer. Arama sırasında başka bir alana geçerseniz odak değişmez. Kısayol: Alt+L.";
+            sgrid.Controls.Add(chkAtt, 0, 10); sgrid.SetColumnSpan(chkAtt, 2);
+            sgrid.Controls.Add(chkFirst, 0, 11); sgrid.SetColumnSpan(chkFirst, 2);
             var sbtn = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
             deleteBtn.Margin = new Padding(S(24), deleteBtn.Margin.Top, deleteBtn.Margin.Right, deleteBtn.Margin.Bottom); // apart from Kaydet
-            excludeBtn.AccessibleDescription = "İndekslenmeyecek ve aranmayacak klasörleri seçin";
             sbtn.Controls.Add(saveBtn); sbtn.Controls.Add(defaultsBtn); sbtn.Controls.Add(excludeBtn); sbtn.Controls.Add(deleteBtn);
-            sgrid.Controls.Add(sbtn, 0, 9); sgrid.SetColumnSpan(sbtn, 2);
+            sgrid.Controls.Add(sbtn, 0, 12); sgrid.SetColumnSpan(sbtn, 2);
             var info = new Label { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, S(14), 0, 0), Anchor = AnchorStyles.Left | AnchorStyles.Right,
                                    Text = "Gizlilik: Arama, ek okuma ve yapay zekâ yalnız bu bilgisayarda çalışır. E-posta ve arama metni hiçbir yere gönderilmez ve günlüğe yazılmaz.\n" +
-                                          "İndeks dosyaları: " + Path.Combine(settings.Data, "index") + "\nAyarlar dosyası: " + settings.ConfigFile };
-            sgrid.Controls.Add(info, 0, 10); sgrid.SetColumnSpan(info, 2);
+                                          "İndeks dosyaları: " + Path.Combine(settings.Data, "index") + "\nAyarlar dosyası: " + settings.ConfigFile, UseMnemonic = false };
+            sgrid.Controls.Add(info, 0, 13); sgrid.SetColumnSpan(info, 2);
             tabSettings.Controls.Add(sgrid);
+            // The settings are taller than the page at the minimum window size: the page scrolls (the focus scrolls the
+            // focused field into view). The other pages fill the page (result list, folder list).
+            tabSettings.AutoScroll = true;
 
             root.Controls.Add(tabs); root.Controls.Add(rule); root.Controls.Add(bar); root.Controls.Add(header);
+            root.Controls.Add(ring); ring.BringToFront(); // not docked: above the other controls, no layout effect
+            Order(header, tabs, rule, bar, ring);
             Controls.Add(root);
             searchBtn.Click += (s, e) => StartSearch();
             stopBtn.Click += (s, e) => StopSession();
@@ -365,25 +435,38 @@ namespace HatirMail
             excludeBtn.Click += (s, e) => AskExcluded();
             defaultsBtn.Click += (s, e) => { ShowSettings(new Settings()); SetStatus("Varsayılan değerler yüklendi. Kaydetmek için Kaydet'e basın."); };
             FormClosing += OnClosing;
+            // Keys: ProcessCmdKey (WinForms pre-translation, as Tab). Second way, for a host loop that does not pre-translate:
+            // the key message itself (KeyPreview; Alt+letter: WM_SYSCOMMAND SC_KEYMENU in WndProc). A key handled by the
+            // first way never comes to the second.
+            KeyPreview = true;
+            KeyDown += (s, e) => { if (Key(e.KeyData)) e.Handled = e.SuppressKeyPress = true; };
+            // Focus frame: after each change of the active control (UpdateDefaultButton), tab, layout or scroll.
+            tabs.SelectedIndexChanged += (s, e) => QueueRing();
+            root.Layout += (s, e) => QueueRing();
+            foreach (TabPage p in tabs.TabPages) { p.Layout += (s, e) => QueueRing(); p.Scroll += (s, e) => UpdateRing(); }
+            Activated += (s, e) => UpdateRing();
             Load += (s, e) =>
             {
-                // A scaled window can be larger than a small high-DPI screen (1366x768 at 125%): fit it to the work area.
-                var wa = Screen.FromControl(this).WorkingArea;
-                MinimumSize = new Size(Math.Min(MinimumSize.Width, wa.Width), Math.Min(MinimumSize.Height, wa.Height));
-                Size = new Size(Math.Min(Width, wa.Width), Math.Min(Height, wa.Height));
+                FitToScreen(null, 1F); // a scaled window can be larger than a small high-DPI screen (1366x768 at 125%)
                 ShowSettings(settings);
                 AttachmentCopy.Clean(settings.Data); // attachment copies that a program held at the last window close
                 LoadStores(); // also starts the index status check of the first store (a short worker run, no model)
                 ShowPreview();
                 FitColumns(list); FitColumns(folderList);
-                ActiveControl = query;
+                ActiveControl = query; // the window opens with the focus in the search box
+                UpdateRing();
             };
-            // GDI text (as TextRenderer measures it): Outlook does not call SetCompatibleTextRenderingDefault(false).
+            // GDI text (as TextRenderer measures it): Outlook does not call SetCompatibleTextRenderingDefault(false). A label
+            // without an access key shows "&" as a character (a store, folder or path name can have one).
             foreach (var c in AllControls(this))
             {
-                if (c is Label) ((Label)c).UseCompatibleTextRendering = false;
+                var l = c as Label;
+                if (l != null) { l.UseCompatibleTextRendering = false; if (Mnemonic(l.Text) == '\0') l.UseMnemonic = false; }
                 if (c is ButtonBase) ((ButtonBase)c).UseCompatibleTextRendering = false;
+                c.GotFocus += (s, e) => QueueRing(); // also a focus change inside a control (NumericUpDown)
             }
+            ApplyColors();
+            Measure();
             SetStatus("Hazır. Hatırladıklarınızı yazıp Ara'ya basın. Yapay zekâ modeli yalnız bu pencere açıkken çalışır.");
             keepTimer.Tick += (s, e) => { keepTimer.Stop(); CloseWarm("keep-alive"); };
             UpdateButtons();
@@ -392,6 +475,25 @@ namespace HatirMail
         public static IEnumerable<Control> AllControls(Control c)
         {
             foreach (Control x in c.Controls) { yield return x; foreach (var y in AllControls(x)) yield return y; }
+        }
+
+        /// <summary>Tab order = the order on the screen (TabIndex 0, 1, 2 … in the given order).</summary>
+        static void Order(params Control[] cs) { for (int i = 0; i < cs.Length; i++) cs[i].TabIndex = i; }
+
+        /// <summary>The text without access key marks ("&amp;Ara" -> "Ara", "&amp;&amp;" -> "&amp;").</summary>
+        public static string StripAmp(string t) { return (t ?? "").Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "&"); }
+
+        /// <summary>The access key of a control text ("Gö&amp;nderen:" -> 'n'), or '\0'.</summary>
+        public static char Mnemonic(string t)
+        {
+            t = t ?? "";
+            for (int i = 0; i < t.Length - 1; i++)
+            {
+                if (t[i] != '&') continue;
+                if (t[i + 1] != '&') return t[i + 1];
+                i++; // "&&" = one "&" character
+            }
+            return '\0';
         }
 
         // A docked label that wraps its text at its width (an AutoSize label stays on one line and is cut).
@@ -416,19 +518,53 @@ namespace HatirMail
 
         int S(int px) { return (int)Math.Round(px * k); }
         static float ScreenDpi() { using (var g = Graphics.FromHwnd(IntPtr.Zero)) return g.DpiX; }
+        int Line { get { return TextRenderer.MeasureText("Ag", Font).Height; } }
 
-        Button MakeButton(string text, bool primary)
+        /// <summary>A button; AccessibleName = its text without "&amp;" and "▼", AccessibleDescription = desc (what it does
+        /// and its access key). A primary button has the Highlight color (high contrast: a system button).</summary>
+        Button MakeButton(string text, bool primary, string desc)
         {
             var b = new Button { Text = text, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, S(2), S(6), S(2)),
-                                 Padding = new Padding(S(10), S(3), S(10), S(3)), UseVisualStyleBackColor = !primary || Plain };
-            if (primary && !Plain)
+                                 Padding = new Padding(S(10), S(3), S(10), S(3)), UseVisualStyleBackColor = true,
+                                 AccessibleName = StripAmp(text).Replace("▼", "").TrimEnd(' ', '…'), AccessibleDescription = desc };
+            if (primary)
             {
-                b.FlatStyle = FlatStyle.Flat; b.BackColor = Accent; b.ForeColor = Color.White; b.Font = boldFont ?? Font;
-                b.FlatAppearance.BorderColor = AccentDark; b.FlatAppearance.MouseOverBackColor = AccentDark;
-                // A disabled flat button keeps its colors: show the state by color (EnabledChanged).
-                b.EnabledChanged += (s, e) => { b.BackColor = b.Enabled ? Accent : SystemColors.ControlLight; b.ForeColor = b.Enabled ? Color.White : SystemColors.GrayText; };
+                b.Font = boldFont;
+                EventHandler paint = (s, e) => PrimaryColors(b);
+                b.EnabledChanged += paint; b.SystemColorsChanged += paint; // a disabled flat button keeps its colors: set them
+                PrimaryColors(b);
             }
             return b;
+        }
+
+        static void PrimaryColors(Button b)
+        {
+            // A BackColor change turns UseVisualStyleBackColor off: reset the colors first.
+            if (HC) { b.ResetBackColor(); b.ResetForeColor(); b.FlatStyle = FlatStyle.Standard; b.UseVisualStyleBackColor = true; return; }
+            b.FlatStyle = FlatStyle.Flat; b.UseVisualStyleBackColor = false;
+            b.BackColor = b.Enabled ? SystemColors.Highlight : SystemColors.ControlLight;
+            b.ForeColor = b.Enabled ? SystemColors.HighlightText : SystemColors.GrayText;
+            b.FlatAppearance.BorderColor = SystemColors.HotTrack; b.FlatAppearance.MouseOverBackColor = SystemColors.HotTrack;
+        }
+
+        /// <summary>Colors that are not a control default (all SystemColors). Called at the start and when Windows changes
+        /// its colors (high contrast on or off): the window follows without a restart.</summary>
+        void ApplyColors()
+        {
+            bool hc = HC;
+            header.BackColor = hc ? SystemColors.Control : SystemColors.Highlight;
+            title.ForeColor = subtitle.ForeColor = hc ? SystemColors.ControlText : SystemColors.HighlightText;
+            attLine.ForeColor = hc ? SystemColors.ControlText : SystemColors.HotTrack;
+            rule.BackColor = SystemColors.ControlDark;
+            ring.BackColor = SystemColors.Highlight;
+            markFonts.Clear(); // high contrast: the marks are also underlined
+            if (IsHandleCreated) { ShowPreview(); list.Invalidate(); }
+        }
+
+        protected override void OnSystemColorsChanged(EventArgs e)
+        {
+            base.OnSystemColorsChanged(e); // the controls first (primary buttons: their own SystemColorsChanged)
+            ApplyColors();
         }
 
         void BarRow(TableLayoutPanel g, int row, string name, ProgressBar bar, Label pct)
@@ -440,12 +576,14 @@ namespace HatirMail
             g.Controls.Add(l, 0, row); g.Controls.Add(bar, 1, row); g.Controls.Add(pct, 2, row);
         }
 
-        void SettingRow(TableLayoutPanel g, int row, string name, NumericUpDown num, string help)
+        void SettingRow(TableLayoutPanel g, int row, string name, Control field, string help)
         {
-            num.Width = S(110); num.Margin = new Padding(0, S(6), 0, 0); num.AccessibleName = name.TrimEnd(':');
-            num.TextAlign = HorizontalAlignment.Right; num.ThousandsSeparator = false;
+            field.Width = S(110); field.Margin = new Padding(0, S(6), 0, 0);
+            field.AccessibleName = StripAmp(name).TrimEnd(':'); field.AccessibleDescription = help + " Kısayol: Alt+" + char.ToUpper(Mnemonic(name), TR) + ".";
+            var num = field as NumericUpDown;
+            if (num != null) { num.TextAlign = HorizontalAlignment.Right; num.ThousandsSeparator = false; }
             g.Controls.Add(new Label { Text = name, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, S(8), S(12), 0) }, 0, row * 2);
-            g.Controls.Add(num, 1, row * 2);
+            g.Controls.Add(field, 1, row * 2);
             var h = new Label { Text = help, AutoSize = true, ForeColor = SystemColors.GrayText, Anchor = AnchorStyles.Left | AnchorStyles.Right,
                                 Margin = new Padding(0, S(2), 0, S(6)) }; // anchored left and right: wraps at the cell width
             g.Controls.Add(h, 1, row * 2 + 1);
@@ -460,6 +598,364 @@ namespace HatirMail
             lv.Columns[0].Width = Math.Max(lv.Columns[1].Width, lv.ClientSize.Width - rest - 2);
         }
 
+        // ------------------------------------------------------------------ scale: text size, DPI, small screens
+        /// <summary>Sizes that come from the text: called at the end of the constructor and after each scale change
+        /// (ApplyScale). The other sizes are S() values that Control.Scale changes with the window.</summary>
+        void Measure()
+        {
+            int line = Line;
+            header.Padding = new Padding(S(16), S(8), S(16), S(10));
+            FitHeader();
+            bar.Padding = new Padding(S(12), S(4), S(12), S(4)); bar.Height = line + S(12);
+            summary.Padding = new Padding(S(12), 0, 0, 0);
+            rule.Height = Math.Max(1, S(1));
+            progress.Width = S(160);
+            foreach (TabPage p in tabs.TabPages) p.Padding = new Padding(S(12));
+            attLine.Height = line;
+            grid.ColumnStyles[2].Width = S(250);
+            dateFrom.CalendarFont = dateTo.CalendarFont = Font;
+            // Filters: the label columns have a fixed width (the fields do not move when the third row shows); fixed row
+            // heights from the real control heights; each field starts at a fixed distance from the row top. The table
+            // lays out a list with the height of a new list, centered in the row; Windows then makes the list taller, and
+            // the row cut it at the bottom (2.19, 2x test). The table height is set, not AutoSize: FilterRows adds row 3.
+            var labelW = new int[3];
+            foreach (var l in filterLabels)
+            {
+                int col = filterTable.GetColumn(l);
+                l.Margin = new Padding(col == 0 ? 0 : S(14), 0, S(6), 0);
+                labelW[col / 2] = Math.Max(labelW[col / 2], l.PreferredWidth + l.Margin.Horizontal);
+            }
+            for (int i = 0; i < 3; i++) filterTable.ColumnStyles[i * 2].Width = labelW[i];
+            clearFiltersBtn.Padding = new Padding(S(10), 0, S(10), 0); // as high as a list
+            filterTable.Padding = new Padding(0, S(4), 0, 0);
+            int rowH = new[] { senderBox.PreferredHeight, dateFrom.PreferredHeight, clearFiltersBtn.PreferredSize.Height }.Max() + S(6);
+            foreach (var c in filterFields)
+                c.Margin = new Padding(0, (rowH - (c is ComboBox ? ((ComboBox)c).PreferredHeight : c is DateTimePicker ? ((DateTimePicker)c).PreferredHeight : c.PreferredSize.Height)) / 2, 0, 0);
+            filterTable.RowStyles[0].Height = rowH; filterTable.RowStyles[1].Height = rowH;
+            FilterRows();
+        }
+
+        void FitHeader()
+        {
+            int h = header.Padding.Vertical + title.PreferredHeight + WrapHeight(subtitle) + S(2);
+            if (header.Height != h) header.Height = h;
+        }
+
+        /// <summary>Scale the open window by r: a new text size (Kaydet) or a new DPI (WM_DPICHANGED: newDpi, want = the
+        /// window rectangle that Windows suggests). Fonts, sizes, margins, column widths and the measured sizes change;
+        /// the focus stays.</summary>
+        void ApplyScale(float r, int newDpi, Rectangle? want)
+        {
+            if (scaling) return;
+            dpi = newDpi;
+            if (Math.Abs(r - 1) < 0.001f) return;
+            scaling = true;
+            var focus = ActiveControl;
+            try
+            {
+                foreach (var sl in new[] { (SearchList)senderBox, (SearchList)recipientBox, folderBox }) sl.ClosePopup();
+                historyMenu.Close(); resultMenu.Close();
+                foreach (var b in AllFilterBoxes.Concat(new[] { storeBox, textSizeBox })) if (b.DroppedDown) b.DroppedDown = false;
+                k *= r; pt *= r;
+                SuspendLayout();
+                // The controls with their own font (bold, title, search box); the others take the window font.
+                var own = AllControls(this).Where(c => !ReferenceEquals(c.Font, c.Parent.Font)).ToList();
+                Font oldBold = boldFont;
+                Font = Scaled(Font, r); titleFont = Scaled(titleFont, r); boldFont = Scaled(boldFont, r);
+                foreach (var c in own) c.Font = ReferenceEquals(c.Font, oldBold) ? boldFont : Scaled(c.Font, r);
+                historyMenu.Font = resultMenu.Font = Font;
+                markFonts.Clear();
+                root.Scale(new SizeF(r, r)); // bounds, margins and paddings of all controls
+                foreach (var lv in new[] { (ListView)list, folderList }) foreach (ColumnHeader h in lv.Columns) h.Width = (int)Math.Round(h.Width * r);
+                foreach (var b in AllFilterBoxes) b.DropDownWidth = Math.Max(1, (int)Math.Round(b.DropDownWidth * r));
+                previewWant = (int)Math.Round(previewWant * r);
+                Measure();
+                ResumeLayout(true);
+                FitToScreen(want, r);
+            }
+            finally { scaling = false; }
+            FitColumns(list); FitColumns(folderList);
+            if (IsHandleCreated) { FitPreview(); ShowPreview(); }
+            if (focus != null && !focus.IsDisposed && focus.CanSelect) ActiveControl = focus;
+            UpdateRing();
+        }
+
+        static Font Scaled(Font f, float r) { return new Font(f.FontFamily, f.Size * r, f.Style, f.Unit); }
+
+        /// <summary>A new text size (Ayarlar, Kaydet).</summary>
+        void ApplyText(int pct)
+        {
+            float r = pct / (float)textPct;
+            textPct = pct;
+            ApplyScale(r, dpi, null);
+        }
+
+        /// <summary>Minimum and window size inside the work area; want = the rectangle of WM_DPICHANGED; r = the scale change.
+        /// A screen smaller than the minimum window (a small high-DPI screen, or a large text size): the window scrolls and
+        /// keeps its layout (AutoScrollMinSize = the client area of the minimum window); nothing is cut.</summary>
+        void FitToScreen(Rectangle? want, float r)
+        {
+            var wa = Screen.FromControl(this).WorkingArea;
+            MinimumSize = new Size(Math.Min(S(820), wa.Width), Math.Min(S(560), wa.Height));
+            AutoScrollMinSize = new Size(Math.Max(0, S(820) - (Width - ClientSize.Width)), Math.Max(0, S(560) - (Height - ClientSize.Height)));
+            if (want != null) Bounds = want.Value;
+            else if (WindowState == FormWindowState.Normal)
+                Size = new Size(Math.Min((int)Math.Round(Width * r), wa.Width), Math.Min((int)Math.Round(Height * r), wa.Height));
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            // A per-monitor window (Connect: DpiScope) that opens on a monitor with another DPI than the system DPI.
+            int now = TestScale > 0 ? dpi : Native.WindowDpi(Handle);
+            if (now > 0 && now != dpi) ApplyScale((float)now / dpi, now, null);
+        }
+
+        [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x02E0) // WM_DPICHANGED: the window moved to a monitor with another DPI (per-monitor window only)
+            {
+                int now = (int)(m.WParam.ToInt64() & 0xFFFF);
+                var rc = (RECT)Marshal.PtrToStructure(m.LParam, typeof(RECT));
+                if (now > 0 && now != dpi) ApplyScale((float)now / dpi, now, Rectangle.FromLTRB(rc.Left, rc.Top, rc.Right, rc.Bottom));
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            // WM_SYSCOMMAND SC_KEYMENU with a character: an Alt+letter that the pre-translation did not take (DefWindowProc
+            // sends it to the window when WM_SYSCHAR reaches a control): the access keys of the window.
+            if (m.Msg == 0x112 && ((long)m.WParam & 0xFFF0) == 0xF100 && m.LParam != IntPtr.Zero && ProcessMnemonic((char)(long)m.LParam)) return;
+            base.WndProc(ref m);
+        }
+
+        // ------------------------------------------------------------------ focus frame and keyboard
+        /// <summary>The focus frame: a Highlight border around the active control (a tab: its header), above the other
+        /// controls. Mouse clicks go through it. Public for the TestHost screenshots (DrawToBitmap ignores its region).</summary>
+        public sealed class FocusFrame : Control
+        {
+            public int Thickness;
+            public FocusFrame() { SetStyle(ControlStyles.Selectable, false); SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true); TabStop = false; Visible = false; }
+            // Only the border is painted (on screen the region also limits it; a screenshot ignores the region).
+            protected override void OnPaintBackground(PaintEventArgs e) { }
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                int w = Thickness;
+                using (var b = new SolidBrush(BackColor))
+                {
+                    e.Graphics.FillRectangle(b, 0, 0, Width, w); e.Graphics.FillRectangle(b, 0, Height - w, Width, w);
+                    e.Graphics.FillRectangle(b, 0, 0, w, Height); e.Graphics.FillRectangle(b, Width - w, 0, w, Height);
+                }
+            }
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == 0x84) { m.Result = (IntPtr)(-1); return; } // WM_NCHITTEST: HTTRANSPARENT
+                base.WndProc(ref m);
+            }
+        }
+
+        protected override void UpdateDefaultButton() { base.UpdateDefaultButton(); QueueRing(); } // the active control changed
+
+        void QueueRing()
+        {
+            if (ringQueued || !IsHandleCreated || IsDisposed) return;
+            ringQueued = true;
+            BeginInvoke((Action)(() => { ringQueued = false; UpdateRing(); })); // after the layout: the final positions
+        }
+
+        void UpdateRing()
+        {
+            if (IsDisposed || scaling) return;
+            var a = ActiveControl;
+            var t = Rectangle.Empty;
+            if (a != null && a != ring && a.Visible && root.Contains(a))
+                t = root.RectangleToClient(a == tabs ? tabs.RectangleToScreen(tabs.GetTabRect(Math.Max(0, tabs.SelectedIndex)))
+                                                     : a.Parent.RectangleToScreen(a.Bounds));
+            int w = Math.Max(2, S(3));
+            var r = Rectangle.Inflate(t, w, w);
+            r.Intersect(root.ClientRectangle);
+            if (a != null && a != tabs && tabs.Contains(a)) r.Intersect(root.RectangleToClient(tabs.RectangleToScreen(tabs.DisplayRectangle)));
+            if (t.IsEmpty || r.Width <= 2 * w || r.Height <= 2 * w) { ring.Visible = false; return; }
+            if (ring.Bounds != r || ring.Thickness != w)
+            {
+                ring.Bounds = r; ring.Thickness = w; ring.Invalidate();
+                var reg = new Region(new Rectangle(Point.Empty, r.Size));
+                reg.Exclude(new Rectangle(w, w, r.Width - 2 * w, r.Height - 2 * w));
+                var old = ring.Region; ring.Region = reg; if (old != null) old.Dispose();
+            }
+            if (root.Controls.GetChildIndex(ring) != 0) ring.BringToFront();
+            ring.Visible = true;
+        }
+
+        /// <summary>Ara tab, focus in the search box, its text selected (Ctrl+F, Esc, ribbon button).</summary>
+        public void FocusQuery()
+        {
+            tabs.SelectedTab = tabSearch;
+            ActiveControl = query;
+            query.SelectAll();
+            UpdateRing();
+        }
+
+        bool MenuOpen
+        {
+            get { return historyMenu.Visible || resultMenu.Visible || new[] { (SearchList)senderBox, (SearchList)recipientBox, folderBox }.Any(x => x.PopupOpen); }
+        }
+
+        /// <summary>The window shortcuts (ProcessCmdKey and KeyDown with KeyPreview; also a test hook: PressKey). Enter in
+        /// the result list: list.KeyDown; Shift+F10 and the menu key: ResultList. In Outlook the keys come through the same
+        /// WinForms pre-translation as Tab (the user tested Tab in Outlook, 10-26 15:1x).</summary>
+        bool Key(Keys k)
+        {
+            if (MenuOpen) return false;
+            Action a = null;
+            Keys code = k & Keys.KeyCode, mods = k & Keys.Modifiers;
+            if (k == (Keys.Control | Keys.F)) a = FocusQuery;
+            else if (k == Keys.F1) a = ShowShortcuts;
+            else if (k == Keys.Escape && ActiveControl != query && !dateOpen && !(ActiveControl is ComboBox && ((ComboBox)ActiveControl).DroppedDown)) a = FocusQuery;
+            else if (mods == Keys.Control && tabs.SelectedTab == tabSearch)
+            {
+                int n = code >= Keys.D1 && code <= Keys.D5 ? code - Keys.D1 : code >= Keys.NumPad1 && code <= Keys.NumPad5 ? code - Keys.NumPad1 : -1;
+                if (n >= 0) a = () => HeaderClick(n);
+            }
+            if (a == null) return false;
+            a();
+            return true;
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData) { return Key(keyData) || base.ProcessCmdKey(ref msg, keyData); }
+
+        static int TabFor(char ch) { return Array.IndexOf(TabKeys, char.ToUpper(ch, TR)); }
+
+        /// <summary>Alt+A, Alt+İ, Alt+Y open a tab (the focus goes to its header); the other access keys: the labels and
+        /// buttons of the visible page.</summary>
+        protected override bool ProcessMnemonic(char ch)
+        {
+            int t = TabFor(ch);
+            if (t < 0) return base.ProcessMnemonic(ch);
+            tabs.SelectedIndex = t;
+            ActiveControl = tabs;
+            UpdateRing();
+            return true;
+        }
+
+        /// <summary>Test hook: shows a modal dialog (F1) instead of ShowDialog (a modal dialog would stop the check).</summary>
+        public Action<Form> ShowModal;
+
+        void ShowShortcuts()
+        {
+            using (var d = new ShortcutDialog(this)) { if (ShowModal != null) ShowModal(d); else d.ShowDialog(this); }
+        }
+
+        /// <summary>The F1 list: the shortcuts, then the access keys of each tab (read from the controls).</summary>
+        public string ShortcutText()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Her yerde:");
+            foreach (var s in Shortcuts) sb.AppendLine("  " + s[0] + ": " + s[1]);
+            foreach (TabPage p in tabs.TabPages)
+            {
+                sb.AppendLine();
+                sb.AppendLine(p.Text + " sekmesi (Alt tuşuyla birlikte):");
+                foreach (var c in AllControls(p).Where(c => c is Label && ((Label)c).UseMnemonic || c is ButtonBase))
+                {
+                    char m = Mnemonic(c.Text);
+                    if (m != '\0') sb.AppendLine("  Alt+" + char.ToUpper(m, TR) + ": " + KeyName(c));
+                }
+            }
+            return sb.ToString().TrimEnd();
+        }
+
+        static string KeyName(Control c)
+        {
+            string t = c is Label ? StripAmp(c.Text) : c.AccessibleName ?? StripAmp(c.Text);
+            int cut = t.IndexOf(" (", StringComparison.Ordinal);
+            if (cut > 0) t = t.Substring(0, cut);
+            return t.TrimEnd(':', ' ', '…');
+        }
+
+        /// <summary>F1: the keyboard shortcuts of the window in a read-only text box (a screen reader reads it line by line).</summary>
+        public sealed class ShortcutDialog : Form
+        {
+            public readonly TextBox Box = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, WordWrap = true };
+            public readonly TableLayoutPanel Body = new TableLayoutPanel { AutoSize = true, ColumnCount = 1 };
+
+            public ShortcutDialog(SearchForm o)
+            {
+                Text = "Klavye kısayolları"; Font = o.Font; AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.FixedDialog;
+                MaximizeBox = MinimizeBox = false; ShowInTaskbar = false; StartPosition = FormStartPosition.CenterParent;
+                Box.Text = o.ShortcutText().Replace("\r\n", "\n").Replace("\n", "\r\n");
+                Box.AccessibleName = "Klavye kısayolları";
+                Box.AccessibleDescription = "Bu penceredeki kısayollar. Satırları ok tuşlarıyla okuyun. Esc listeyi kapatır.";
+                Box.BackColor = SystemColors.Window; // a read-only box is gray by default
+                Box.Width = o.S(600); Box.Height = o.S(420); Box.Margin = new Padding(0, 0, 0, o.S(12));
+                var close = o.MakeButton("&Kapat", true, "Listeyi kapatır.");
+                close.DialogResult = DialogResult.OK; close.Anchor = AnchorStyles.Right; close.UseCompatibleTextRendering = false;
+                Body.Controls.Add(Box); Body.Controls.Add(close);
+                Body.Location = new Point(o.S(14), o.S(12));
+                Controls.Add(Body);
+                var ps = Body.GetPreferredSize(Size.Empty);
+                ClientSize = new Size(ps.Width + o.S(28), ps.Height + o.S(22));
+                AcceptButton = close; CancelButton = close;
+                ActiveControl = Box;
+            }
+        }
+
+        // ------------------------------------------------------------------ result rows
+        /// <summary>The result list. A keyboard menu request (Shift+F10, the menu key: WM_CONTEXTMENU with lParam -1) opens
+        /// the menu under the selected row, not in the middle of the list.</summary>
+        sealed class ResultList : ListView
+        {
+            public ResultList() { DoubleBuffered = true; }
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == 0x7B && unchecked((int)(long)m.LParam) == -1 && ContextMenuStrip != null) // WM_CONTEXTMENU from the keyboard (x, y = -1)
+                {
+                    if (SelectedItems.Count > 0)
+                    {
+                        var it = SelectedItems[0];
+                        it.EnsureVisible();
+                        var b = it.Bounds;
+                        ContextMenuStrip.Show(this, new Point(Math.Max(0, b.Left) + b.Height, b.Bottom));
+                    }
+                    return;
+                }
+                base.WndProc(ref m);
+            }
+        }
+
+        static string Cell(ListViewItem it, int col) { return ((string[])((Dictionary<string, object>)it.Tag)["cells"])[col]; }
+
+        /// <summary>A result cell: the text of the column (Tag "cells"), SystemColors; the focused row has a frame.</summary>
+        void DrawCell(object s, DrawListViewSubItemEventArgs e)
+        {
+            var it = e.Item;
+            if (it == null || !(it.Tag is Dictionary<string, object>)) { e.DrawDefault = true; return; }
+            bool sel = it.Selected, focus = list.Focused;
+            Color back = sel ? (focus ? SystemColors.Highlight : SystemColors.Control) : SystemColors.Window;
+            Color fore = sel ? (focus ? SystemColors.HighlightText : SystemColors.ControlText) : it.ForeColor;
+            var cell = e.Bounds;
+            if (e.ColumnIndex == 0) cell.Width = list.Columns[0].Width; // the bounds of column 0 = the whole row
+            using (var b = new SolidBrush(back)) e.Graphics.FillRectangle(b, cell);
+            TextRenderer.DrawText(e.Graphics, Cell(it, e.ColumnIndex), list.Font, Rectangle.Inflate(cell, -S(4), 0), fore,
+                                  TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            if (it.Focused && focus)
+            {
+                var row = it.Bounds;
+                var g = e.Graphics;
+                var clip = g.Clip;
+                g.SetClip(cell);
+                using (var p = new Pen(sel ? SystemColors.HighlightText : SystemColors.Highlight, Math.Max(2, S(2))) { Alignment = PenAlignment.Inset })
+                    g.DrawRectangle(p, row.X, row.Y, row.Width - 1, row.Height - 1);
+                g.Clip = clip;
+            }
+        }
+
+        string FolderPath(string id)
+        {
+            var f = id == null ? null : allFolders.FirstOrDefault(x => x.Id == id);
+            return f != null ? f.Path : null;
+        }
+
         // ------------------------------------------------------------------ settings
         void ShowSettings(Settings s)
         {
@@ -468,14 +964,17 @@ namespace HatirMail
             numBudget.Value = Math.Max(numBudget.Minimum, Math.Min(numBudget.Maximum, s.SearchIndexBudgetS));
             numKeep.Value = Math.Max(numKeep.Minimum, Math.Min(numKeep.Maximum, s.KeepAliveMin));
             chkAtt.Checked = s.Attachments;
+            chkFirst.Checked = s.FocusFirstResult;
+            textSizeBox.SelectedIndex = Math.Max(0, Math.Min(4, (Settings.ClampTextScale(s.TextScalePct) - 100) / 25));
         }
 
         void SaveSettings()
         {
-            var old = new[] { settings.Threads, settings.MemoryLimitMb, settings.SearchIndexBudgetS, settings.KeepAliveMin };
-            bool oldAtt = settings.Attachments;
+            var old = new[] { settings.Threads, settings.MemoryLimitMb, settings.SearchIndexBudgetS, settings.KeepAliveMin, settings.TextScalePct };
+            bool oldAtt = settings.Attachments, oldFirst = settings.FocusFirstResult;
             settings.Threads = (int)numThreads.Value; settings.MemoryLimitMb = (int)numMemory.Value;
             settings.SearchIndexBudgetS = (int)numBudget.Value; settings.Attachments = chkAtt.Checked; settings.KeepAliveMin = (int)numKeep.Value;
+            settings.FocusFirstResult = chkFirst.Checked; settings.TextScalePct = 100 + 25 * Math.Max(0, textSizeBox.SelectedIndex);
             try
             {
                 settings.Save();
@@ -484,11 +983,12 @@ namespace HatirMail
                 if (old[0] != settings.Threads || old[1] != settings.MemoryLimitMb || settings.KeepAliveMin == 0) CloseWarm("settings");
                 else if (old[3] != settings.KeepAliveMin && warm != null) ArmKeep();
                 if (oldAtt != settings.Attachments) StartStatus(); // attachment counts change
+                if (settings.TextScalePct != textPct) ApplyText(settings.TextScalePct); // at once, the focus stays on Kaydet
             }
             catch (Exception ex)
             {
                 settings.Threads = old[0]; settings.MemoryLimitMb = old[1]; settings.SearchIndexBudgetS = old[2]; settings.KeepAliveMin = old[3];
-                settings.Attachments = oldAtt;
+                settings.TextScalePct = old[4]; settings.Attachments = oldAtt; settings.FocusFirstResult = oldFirst;
                 SetStatus("Ayarlar kaydedilemedi (" + ex.GetType().Name + "). Eski değerler geçerli.");
             }
         }
@@ -657,8 +1157,8 @@ namespace HatirMail
                 Text = "Aramayı kaydet"; Font = o.Font; AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.FixedDialog;
                 MaximizeBox = MinimizeBox = false; ShowInTaskbar = false; StartPosition = FormStartPosition.CenterParent;
                 var l = new Label { AutoSize = true, Text = "Aramanın adı (Aramalar menüsünde görünür):", Margin = new Padding(0, 0, 0, o.S(4)), UseCompatibleTextRendering = false };
-                Box.Width = o.S(380); Box.MaxLength = 80; Box.Text = name; Box.AccessibleName = "Aramanın adı"; Box.Margin = new Padding(0, 0, 0, o.S(12));
-                var ok = o.MakeButton("&Kaydet", true); var cancel = o.MakeButton("İptal", false);
+                Box.Width = o.S(380); Box.MaxLength = 80; Box.Text = name; Box.AccessibleName = "Aramanın adı"; Box.AccessibleDescription = "Aramalar menüsünde görünecek ad. En çok 80 karakter."; Box.Margin = new Padding(0, 0, 0, o.S(12));
+                var ok = o.MakeButton("&Kaydet", true, "Aramayı bu adla kaydeder."); var cancel = o.MakeButton("İptal", false, "Kaydetmeden kapatır. Kısayol: Esc.");
                 ok.DialogResult = DialogResult.OK; cancel.DialogResult = DialogResult.Cancel;
                 ok.UseCompatibleTextRendering = cancel.UseCompatibleTextRendering = false;
                 var b = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, Margin = new Padding(0) };
@@ -767,14 +1267,14 @@ namespace HatirMail
                 this.all = all;
                 Text = "İndekslenmeyecek klasörler"; Font = o.Font; AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.FixedDialog;
                 MaximizeBox = MinimizeBox = false; ShowInTaskbar = false; StartPosition = FormStartPosition.CenterParent;
-                var l = new Label { AutoSize = true, MaximumSize = new Size(o.S(520), 0), Margin = new Padding(0, 0, 0, o.S(8)), UseCompatibleTextRendering = false,
+                var l = new Label { AutoSize = true, MaximumSize = new Size(o.S(520), 0), Margin = new Padding(0, 0, 0, o.S(8)), UseCompatibleTextRendering = false, UseMnemonic = false,
                                     Text = "Posta kutusu: " + storeName + "\n\nİşaretli klasörler ve alt klasörleri indekslenmez ve aranmaz. Bu klasörlerin postaları " +
                                            "kaydettiğinizde indeksten silinir. Outlook'taki postalarınız değişmez." };
-                Box.CheckOnClick = true; Box.IntegralHeight = false; Box.Width = o.S(520); Box.Height = o.S(300); Box.AccessibleName = "Hariç tutulacak klasörler";
+                Box.CheckOnClick = true; Box.IntegralHeight = false; Box.Width = o.S(520); Box.Height = o.S(300); Box.AccessibleName = "Hariç tutulacak klasörler"; Box.AccessibleDescription = "İşaretli klasörler ve alt klasörleri indekslenmez ve aranmaz. Boşluk tuşu işareti değiştirir.";
                 Box.Margin = new Padding(0, 0, 0, o.S(12));
                 foreach (var f in all) Box.Items.Add(f.Path.TrimStart('\\'), excluded.Contains(f.Id));
                 Box.ItemCheck += OnItemCheck;
-                var ok = o.MakeButton("&Kaydet", true); var cancel = o.MakeButton("İptal", false);
+                var ok = o.MakeButton("&Kaydet", true, "Seçimi kaydeder. İşaretli klasörlerin postaları indeksten silinir."); var cancel = o.MakeButton("İptal", false, "Kaydetmeden kapatır. Kısayol: Esc.");
                 ok.DialogResult = DialogResult.OK; cancel.DialogResult = DialogResult.Cancel;
                 ok.UseCompatibleTextRendering = cancel.UseCompatibleTextRendering = false;
                 var b = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, Margin = new Padding(0) };
@@ -1002,12 +1502,16 @@ namespace HatirMail
                 Focus();
             }
 
+            public void ClosePopup() { if (PopupOpen) popup.Close(); }
+
             /// <summary>Open the list with the search field (text: the first letters).</summary>
             public void ShowPopup(string text)
             {
                 if (!Enabled || PopupOpen) return;
                 Field.Font = Matches.Font = Font;
                 Field.AccessibleName = AccessibleName + ": ara"; Matches.AccessibleName = AccessibleName;
+                Field.AccessibleDescription = "Ad ya da adres yazın. Ok tuşlarıyla seçin, Enter ile alın, Esc ile kapatın.";
+                Matches.AccessibleDescription = Multi ? "Enter ya da boşluk işareti değiştirir. Liste açık kalır." : "Enter seçer.";
                 // ListBox.ItemHeight is a fixed 13 px before its window exists: the row height comes from the font.
                 // CheckedListBox rows are Font.Height + 2 (the last row was cut in the 2.19 layout test, 10-23).
                 int pad = Math.Max(2, Font.Height / 5), rows = Math.Min(MaxDropDownItems, Math.Max(3, Items.Count)),
@@ -1162,13 +1666,19 @@ namespace HatirMail
         /// clear button only with a filter. The search does not start again by itself.</summary>
         void FilterChanged()
         {
+            FilterRows();
+            clearFiltersBtn.Enabled = AllFilterBoxes.Any(b => b.SelectedIndex > 0) || folderBox.Checked.Count > 0;
+            if (!fillingFilters && session == null) SetStatus("Filtre değişti. Uygulamak için Ara'ya basın.");
+        }
+
+        /// <summary>The third filter row (Başlangıç, Bitiş) shows only for "Özel aralık…".</summary>
+        void FilterRows()
+        {
             bool range = KeyOf(dateBox) == "custom";
             int rowH = (int)filterTable.RowStyles[0].Height;
             foreach (var c in rangeRow) c.Visible = range;
             filterTable.RowStyles[2].Height = range ? rowH : 0;
             filterTable.Height = filterTable.Padding.Vertical + (range ? 3 : 2) * rowH;
-            clearFiltersBtn.Enabled = AllFilterBoxes.Any(b => b.SelectedIndex > 0) || folderBox.Checked.Count > 0;
-            if (!fillingFilters && session == null) SetStatus("Filtre değişti. Uygulamak için Ara'ya basın.");
         }
 
         void ClearFilters()
@@ -1218,7 +1728,7 @@ namespace HatirMail
                 ListViewItem a = (ListViewItem)x, b = (ListViewItem)y;
                 int c = f.sortCol == 2 ? When(a).CompareTo(When(b))
                       : f.sortCol == 3 ? Rank(b).CompareTo(Rank(a)) // ascending = the least relevant first
-                      : Text.Compare(a.SubItems[f.sortCol].Text, b.SubItems[f.sortCol].Text);
+                      : Text.Compare(Cell(a, f.sortCol), Cell(b, f.sortCol));
                 if (f.sortDesc) c = -c;
                 return c != 0 ? c : Rank(a).CompareTo(Rank(b));
             }
@@ -1286,6 +1796,7 @@ namespace HatirMail
             EventNames.Clear(); modelSeen = false;
             lastStoreId = st.Id;
             Begin(new WorkerSession(this, source, settings, "search", st.Id, st.Name, sel, q) { Filters = filters });
+            searchedText = query.Text; // "Arama bitince ilk sonuca geç": only while this text stays
             repeatLast = () => { query.Text = q; StartSearch(); };
             SetStatus(ModelState == "loading" ? "Arama başladı. Yapay zekâ modeli hazırlanıyor (pencere açılınca başladı)…"
                     : ModelState == "ready" ? "Arama başladı. Yapay zekâ hazır." : "Arama başladı…");
@@ -1629,8 +2140,11 @@ namespace HatirMail
                 string date = r["date"] as string ?? "";
                 DateTime dt;
                 if (DateTime.TryParse(date, CultureInfo.InvariantCulture, DateTimeStyles.None, out dt)) date = dt.ToString("dd.MM.yyyy HH:mm", TR);
-                var it = new ListViewItem(new[] { r["subject"] as string, r["sender"] as string, date,
-                                                  Conf(r["confidence"] as string), string.Join(", ", ((ArrayList)r["why"]).Cast<string>()) });
+                // The row text is one sentence for a screen reader (NVDA reads the text of each column, so the other
+                // columns stay empty); DrawCell shows the columns from "cells".
+                r["cells"] = new[] { r["subject"] as string ?? "", r["sender"] as string ?? "", date, Conf(r["confidence"] as string),
+                                     string.Join(", ", ((ArrayList)r["why"]).Cast<string>()) };
+                var it = new ListViewItem(new[] { RowText.Sentence(r, FolderPath(Str(r, "folder")), DateTime.Today), "", "", "", "" });
                 it.Tag = r;
                 if ((r["confidence"] as string) == "zayıf") it.ForeColor = SystemColors.GrayText;
                 list.Items.Add(it);
@@ -1672,6 +2186,16 @@ namespace HatirMail
             else if (list.Items.Count > 0) { list.Items[0].Selected = true; autoEid = (string)((Dictionary<string, object>)list.Items[0].Tag)["eid"]; } // as before 10-23
             else ShowPreview();
             UpdateButtons();
+            // "Arama bitince ilk sonuca geç" (Ayarlar): the final list of a search, only while the user waits in the query
+            // row with the same text (a user who went on to another field keeps the focus).
+            if (stage == "final" && settings.FocusFirstResult && searchedText != null && list.Items.Count > 0 &&
+                query.Text == searchedText && (ActiveControl == null || qrow.Contains(ActiveControl)))
+            {
+                var first = list.SelectedItems.Count > 0 ? list.SelectedItems[0] : list.Items[0];
+                first.Selected = first.Focused = true;
+                ActiveControl = list;
+            }
+            if (stage == "final" || ev.ContainsKey("similar_to")) searchedText = null;
         }
 
         static string Conf(string c)
@@ -1758,8 +2282,10 @@ namespace HatirMail
                                                        Pct(read, total), sem, attT > 0 ? ", ek " + Pct(attD, attT) : "");
                 summary.Text = "İndeks: anlam " + sem;
             }
-            scopeLine.ForeColor = complete || cov.Count == 0 || Busy ? SystemColors.ControlText : (Plain ? SystemColors.ControlText : Warn);
-            summary.ForeColor = complete && !Plain ? Good : SystemColors.ControlText;
+            // No color carries the state (high contrast keeps the text color): an incomplete index is bold, as the full text says.
+            bool warn = !(complete || cov.Count == 0 || Busy);
+            if (warn) { if (!ReferenceEquals(scopeLine.Font, boldFont)) scopeLine.Font = boldFont; }
+            else if (!ReferenceEquals(scopeLine.Font, scopeLine.Parent.Font)) scopeLine.ResetFont(); // the page font again
         }
 
         void SetBar(ProgressBar bar, Label pct, int part, int whole, string detail)
@@ -1791,7 +2317,7 @@ namespace HatirMail
             }
             Add(r["subject"] as string ?? "", titleFont, SystemColors.WindowText, Marks(r, "hl_subject"));
             preview.AppendText("\n");
-            string date = list.SelectedItems[0].SubItems[2].Text;
+            string date = Cell(list.SelectedItems[0], 2);
             Add((r["sender"] as string ?? "") + (date.Length > 0 ? "  •  " + date : ""), Font, SystemColors.GrayText, null);
             string to = r.ContainsKey("recipients") ? r["recipients"] as string : "";
             if (!string.IsNullOrEmpty(to)) { preview.AppendText("\n"); Add("Kime: " + to, Font, SystemColors.GrayText, null); }
@@ -1809,7 +2335,8 @@ namespace HatirMail
             return ((ArrayList)r[key]).Cast<ArrayList>().Select(a => new[] { Convert.ToInt32(a[0]), Convert.ToInt32(a[1]) }).ToList();
         }
 
-        // Append text; marks = [start, length] in UTF-16 units of text (from the worker) are bold on a yellow background.
+        // Append text; marks = [start, length] in UTF-16 units of text (from the worker) are bold on the Info color (a
+        // system color: light yellow in the default theme); high contrast: bold and underlined, the theme colors.
         void Add(string text, Font font, Color color, List<int[]> marks)
         {
             int pos = 0;
@@ -1818,7 +2345,7 @@ namespace HatirMail
                 int a = Math.Max(pos, Math.Min(text.Length, m[0])), b = Math.Min(text.Length, m[0] + m[1]);
                 if (b <= a) continue;
                 Append(text.Substring(pos, a - pos), font, color, Color.Empty, false);
-                Append(text.Substring(a, b - a), font, color, MarkColor, true);
+                Append(text.Substring(a, b - a), font, color, SystemColors.Info, true);
                 pos = b;
             }
             Append(text.Substring(pos), font, color, Color.Empty, false);
@@ -1830,13 +2357,13 @@ namespace HatirMail
             int start = preview.TextLength;
             preview.AppendText(s);
             preview.Select(start, preview.TextLength - start);
-            // High contrast: no colors; the match is bold + underlined.
+            bool hc = HC;
             Font bold;
             if (mark && !markFonts.TryGetValue(font, out bold))
-                markFonts[font] = bold = new Font(font, Plain ? FontStyle.Bold | FontStyle.Underline : FontStyle.Bold);
+                markFonts[font] = bold = new Font(font, hc ? FontStyle.Bold | FontStyle.Underline : FontStyle.Bold);
             preview.SelectionFont = mark ? markFonts[font] : font;
-            preview.SelectionColor = Plain ? SystemColors.WindowText : color;
-            preview.SelectionBackColor = mark && !Plain ? back : SystemColors.Window;
+            preview.SelectionColor = hc ? SystemColors.WindowText : mark ? SystemColors.InfoText : color;
+            preview.SelectionBackColor = mark && !hc ? back : SystemColors.Window;
             preview.Select(preview.TextLength, 0);
         }
 
@@ -1969,7 +2496,7 @@ namespace HatirMail
             get
             {
                 int n = 0;
-                for (int i = 0; i < preview.TextLength; i++) { preview.Select(i, 1); if (preview.SelectionBackColor.ToArgb() == MarkColor.ToArgb() || (Plain && preview.SelectionFont.Underline)) n++; }
+                for (int i = 0; i < preview.TextLength; i++) { preview.Select(i, 1); var f = preview.SelectionFont; if (f != null && f.Bold && (!HC || f.Underline)) n++; }
                 preview.Select(0, 0);
                 return n;
             }
@@ -1994,7 +2521,50 @@ namespace HatirMail
         public string[] Suggestions { get { return query.AutoCompleteCustomSource.Cast<string>().ToArray(); } }
         public List<ToolStripItem> HistoryMenuItems() { BuildHistoryMenu(); return historyMenu.Items.Cast<ToolStripItem>().ToList(); }
 
+        // Test hooks: accessibility, keyboard, scale (TestHost --layout-check)
+        public bool PressKey(Keys k) { var m = new Message(); return ProcessCmdKey(ref m, k); } // a shortcut, as ProcessCmdKey gets it
+        public bool PressMnemonic(char c) { return ProcessMnemonic(c); }                           // Alt+letter
+        public Control Active { get { return ActiveControl; } }
+        public TabControl Tabs { get { return tabs; } }
+        public ListView Results { get { return list; } }
+        public Rectangle RingBounds { get { UpdateRing(); return ring.Visible ? ring.Bounds : Rectangle.Empty; } } // in root coordinates
+        public void SimulateSystemColorsChanged() { OnSystemColorsChanged(EventArgs.Empty); }
+        public string ResultSentence(int i) { return list.Items[i].Text; }
+        public string[] ResultCells(int i) { return (string[])((Dictionary<string, object>)list.Items[i].Tag)["cells"]; }
+        public void MarkSearchStarted() { searchedText = query.Text; }
+        public int TextScalePct { get { return textPct; } }
+        public int WindowDpi { get { return dpi; } }
+        public Control QueryBox { get { return query; } }
+        public ContextMenuStrip ResultMenu { get { return resultMenu; } }
+        public void SetActive(Control c) { ActiveControl = c; }
+        public bool FocusFirstSetting { get { return settings.FocusFirstResult; } set { settings.FocusFirstResult = value; } }
+
         class StoreItem { public string Id, Name; public override string ToString() { return Name; } }
+    }
+
+    /// <summary>The text of a result row: one sentence that a screen reader reads at once, for example "Ayşe Yılmaz,
+    /// Bütçe taslağı, 12 Mart, Gelen Kutusu, ekte eşleşti: rapor.xlsx". Parts: sender, subject, date (with the year
+    /// when it is not this year), the last part of the folder path, the attachment match, "zayıf eşleşme". An empty part
+    /// is left out. No WinForms: TestHost --row-text-check runs it on mono.</summary>
+    public static class RowText
+    {
+        static readonly CultureInfo TR = CultureInfo.GetCultureInfo("tr-TR");
+
+        public static string Sentence(Dictionary<string, object> r, string folderPath, DateTime today)
+        {
+            Func<string, string> str = key => { object v; return r.TryGetValue(key, out v) ? (v as string ?? "").Trim() : ""; };
+            var parts = new List<string> { str("sender"), str("subject") };
+            DateTime d;
+            if (DateTime.TryParse(str("date"), CultureInfo.InvariantCulture, DateTimeStyles.None, out d))
+                parts.Add(d.ToString(d.Year == today.Year ? "d MMMM" : "d MMMM yyyy", TR));
+            string folder = (folderPath ?? "").TrimEnd('\\');
+            parts.Add(folder.Substring(folder.LastIndexOf('\\') + 1));
+            string att = str("match_attachment"), member = str("match_att_member").Replace('\\', '/');
+            if (att.Length > 0)
+                parts.Add("ekte eşleşti: " + (member.Length > 0 ? member.Substring(member.LastIndexOf('/') + 1) + " (" + att + " içinde)" : att));
+            if (str("confidence") == "zayıf") parts.Add("zayıf eşleşme");
+            return string.Join(", ", parts.Where(x => x.Length > 0));
+        }
     }
 
     /// <summary>One worker process (embedded Python) with its pipes, Job Object and reader thread. It runs one session,
@@ -2397,9 +2967,46 @@ namespace HatirMail
         }
     }
 
-    /// <summary>Windows Job Object: the worker dies with the job handle (and with Outlook); memory cap.</summary>
-    static class Native
+    /// <summary>Windows Job Object: the worker dies with the job handle (and with Outlook); memory cap. DPI helpers.</summary>
+    public static class Native
     {
+        [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+        [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern IntPtr GetWindowDpiAwarenessContext(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern int GetAwarenessFromDpiAwarenessContext(IntPtr context);
+
+        /// <summary>The DPI of a window, or 0 (Windows before 10 1607, or not Windows).</summary>
+        public static int WindowDpi(IntPtr hwnd)
+        {
+            try { return (int)GetDpiForWindow(hwnd); } catch (EntryPointNotFoundException) { return 0; } catch (DllNotFoundException) { return 0; }
+        }
+
+        /// <summary>The DPI awareness of a window: 0 unaware, 1 system, 2 per monitor; -1 unknown (test hook).</summary>
+        public static int WindowAwareness(IntPtr hwnd)
+        {
+            try { return GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(hwnd)); }
+            catch (EntryPointNotFoundException) { return -1; } catch (DllNotFoundException) { return -1; }
+        }
+
+        /// <summary>Windows that this thread makes inside the block are per-monitor DPI aware (v1, as Outlook itself): they
+        /// get WM_DPICHANGED on a monitor with another DPI. Office calls the ribbon callbacks in a system-aware context
+        /// (learn.microsoft.com, "Handle high DPI and DPI scaling in your Office solution"); the old context comes back at
+        /// the end. No effect before Windows 10 1607. ponytail: v1 does not scale the title bar of the window on another
+        /// monitor; upgrade path: v2 (-4), after a test of the WinForms 4.8 child windows with it.</summary>
+        public sealed class DpiScope : IDisposable
+        {
+            readonly IntPtr old;
+            public DpiScope()
+            {
+                if (Environment.OSVersion.Platform != PlatformID.Win32NT) return;
+                try { old = SetThreadDpiAwarenessContext((IntPtr)(-3)); } catch (EntryPointNotFoundException) { }
+            }
+            public void Dispose()
+            {
+                if (old != IntPtr.Zero) try { SetThreadDpiAwarenessContext(old); } catch (EntryPointNotFoundException) { }
+            }
+        }
+
         const int JobObjectExtendedLimitInformation = 9;
         const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000, JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x100,
                    JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x8;
