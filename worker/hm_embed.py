@@ -7,6 +7,7 @@ took most of the load time). TorchEncoder is the reference path (eval/parity_onn
 vectors); the worker never uses it.
 The tokenizer is the official tokenizer.json, used through the `tokenizers` library directly.
 """
+import functools
 import os
 from pathlib import Path
 
@@ -47,13 +48,21 @@ class FakeEncoder:
     def run(self, prepared):
         return self.encode(*prepared)
 
+    @staticmethod
+    def _words(t, max_tokens):
+        import re
+        return re.findall(r"\w{3,}", t.lower())[:max_tokens]
+
+    def lengths(self, texts, max_tokens=MAX_DOC_TOKENS):
+        """The 'tokens' of this encoder: words of 3 or more letters."""
+        return [len(self._words(t, max_tokens)) for t in texts]
+
     def encode(self, texts, max_tokens=MAX_DOC_TOKENS):
         import hashlib
-        import re
         np = self.np
         out = np.zeros((len(texts), DIM), np.float32)
         for i, t in enumerate(texts):
-            for w in re.findall(r"\w{3,}", t.lower())[:max_tokens]:
+            for w in self._words(t, max_tokens):
                 out[i, int(hashlib.md5(w.encode()).hexdigest()[:6], 16) % DIM] += 1.0
         out += 1e-3
         return out / np.linalg.norm(out, axis=1, keepdims=True)
@@ -70,6 +79,26 @@ class _Tokens:
         self.tok.enable_padding(pad_id=PAD_ID, pad_token="<pad>", direction="right")
         encs = self.tok.encode_batch(list(texts))
         return (np.array([e.ids for e in encs], dtype=np.int64), np.array([e.attention_mask for e in encs], dtype=np.int64))
+
+    def lengths(self, texts, max_tokens=MAX_DOC_TOKENS):
+        """Token count of each text as batch() makes it (special tokens, truncation), without the padding. One thread
+        only, as batch(); batch() turns the padding on again."""
+        self.tok.enable_truncation(max_tokens)
+        self.tok.no_padding()
+        return [len(e.ids) for e in self.tok.encode_batch(list(texts))]
+
+
+@functools.cache
+def runtime_version():
+    """onnxruntime.__version__ read from its __init__.py, without the import (the import starts the runtime: 0.4 s on
+    2.19). '' when it is not found."""
+    import importlib.util
+    import re
+    try:
+        text = Path(importlib.util.find_spec("onnxruntime").origin).read_text(encoding="utf-8")
+        return re.search(r"^__version__\s*=\s*[\"']([^\"']+)", text, re.M).group(1)
+    except Exception:  # not installed, or another file layout: the key changes once
+        return ""
 
 
 def session(path, threads):

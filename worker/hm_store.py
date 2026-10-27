@@ -44,6 +44,10 @@ CREATE INDEX IF NOT EXISTS atts_state ON atts(state);
 CREATE TABLE IF NOT EXISTS att_texts(file_hash TEXT PRIMARY KEY, state TEXT, text TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_att USING fts5(
   body, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2', prefix='2 3 4');
+-- qvecs: query vectors of the recent and saved searches of the add-in (begin.keep_queries), float32 as the model gave
+-- them. qkey = a hash of the encoder settings and the query text (QueryVector.key): no query text in the file. Not part
+-- of data_gen: the search results do not depend on this table (the vector is the same as a new encode).
+CREATE TABLE IF NOT EXISTS qvecs(qkey TEXT PRIMARY KEY, model_rev TEXT, vec BLOB);
 -- data_gen: +1 for every change of an items row (insert, delete, other folder), a chunk or a vector, also by another
 -- process. The caches of a kept worker (Store.cached: vector matrix, filter values) are valid only for one value.
 INSERT OR IGNORE INTO meta(k, v) VALUES('data_gen', '0');
@@ -355,6 +359,25 @@ class Store:
         for a in (ids, seq, mat):
             a.setflags(write=False)  # shared by the sessions of a kept worker
         return ids, seq, mat
+
+    # -- query vectors of recent and saved searches --------------------------------------------
+    def qvec(self, key, model_rev):
+        """The stored float32 query vector of key, or None."""
+        r = self.db.execute("SELECT vec FROM qvecs WHERE qkey=? AND model_rev=?", (key, model_rev)).fetchone()
+        ok = r and isinstance(r[0], bytes) and len(r[0]) % 4 == 0  # a damaged row: the model encodes the query again
+        return np.frombuffer(r[0], np.float32) if ok else None
+
+    def put_qvec(self, key, model_rev, vec):
+        self.db.execute("INSERT OR REPLACE INTO qvecs(qkey, model_rev, vec) VALUES(?,?,?)",
+                        (key, model_rev, np.asarray(vec, np.float32).tobytes()))
+
+    def prune_qvecs(self, keys, model_rev):
+        """Keep only the vectors of keys (the searches that the add-in still lists) of this model. Returns the number
+        of deleted rows. A short table (at most a few hundred rows): one pass in Python."""
+        keep = set(keys)
+        gone = [k for k, rev in self.db.execute("SELECT qkey, model_rev FROM qvecs") if k not in keep or rev != model_rev]
+        self.db.executemany("DELETE FROM qvecs WHERE qkey=?", [(k,) for k in gone])
+        return len(gone)
 
     # -- keyword search -----------------------------------------------------------------------
     def vocab(self):

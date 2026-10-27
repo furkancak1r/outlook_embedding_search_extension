@@ -87,9 +87,10 @@ namespace HatirMail
         readonly Label pctRead = new Label(), pctSem = new Label(), pctAtt = new Label(), phase = new Label();
         readonly Button indexBtn, updateBtn, indexStopBtn, refreshBtn;
         // Ayarlar
-        readonly NumericUpDown numThreads = new NumericUpDown(), numMemory = new NumericUpDown(), numBudget = new NumericUpDown(), numKeep = new NumericUpDown();
+        readonly NumericUpDown numThreads = new NumericUpDown(), numMemory = new NumericUpDown(), numBudget = new NumericUpDown(), numKeep = new NumericUpDown(),
+                               numKeepClosed = new NumericUpDown();
         readonly ComboBox textSizeBox = new ComboBox();
-        readonly CheckBox chkAtt = new CheckBox(), chkFirst = new CheckBox();
+        readonly CheckBox chkAtt = new CheckBox(), chkFirst = new CheckBox(), chkBattery = new CheckBox();
         readonly Button saveBtn, defaultsBtn, deleteBtn, excludeBtn;
         // Status bar
         readonly Label status = new Label(), summary = new Label();
@@ -112,6 +113,12 @@ namespace HatirMail
         string lastStoreId;
         bool loadingFolders, allowClose, closing, modelSeen, summaryQueued;
         public int KeepAliveMsOverride;    // test hook: keep-alive time in ms instead of the setting
+        public int KeepAfterCloseMsOverride; // test hook: the time after the window close in ms instead of the setting
+        bool parked;        // closed by the user, hidden: keeps the idle worker and its model for the time after the close
+        string pausedMode;  // "index" or "update" that stopped on battery power: it starts again on AC power
+        readonly System.Windows.Forms.Timer powerTimer = new System.Windows.Forms.Timer { Interval = 10000 };
+        /// <summary>True on battery power. Unknown (some PCs, desktops without a battery) counts as AC power. Test hook.</summary>
+        public Func<bool> OnBattery = () => SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Offline;
         public event Action<string> ModelStateChanged; // test hook
         readonly Dictionary<Font, Font> markFonts = new Dictionary<Font, Font>(); // bold variants for the preview marks
         public double WorkerPeakMb; // test hook: peak RSS reported by the worker
@@ -386,14 +393,23 @@ namespace HatirMail
             numMemory.Minimum = 2048; numMemory.Maximum = 32768; numMemory.Increment = 512;
             numBudget.Minimum = 0; numBudget.Maximum = 600; numBudget.Increment = 5;
             numKeep.Minimum = 0; numKeep.Maximum = 120;
+            numKeepClosed.Minimum = 0; numKeepClosed.Maximum = 10;
+            // Two settings share the rows of related settings (a field right of the first field): fewer rows to scroll.
+            chkBattery.Text = "&Pille çalışırken indekslemeyi duraklat"; chkBattery.AutoSize = true;
+            chkBattery.AccessibleName = "Pille çalışırken indekslemeyi duraklat";
+            chkBattery.AccessibleDescription = "İşaretliyse tam indeksleme ve Güncelle pille çalışırken durur, prize takılınca kaldığı yerden sürer. Kısayol: Alt+P.";
             SettingRow(sgrid, 0, "İşlemci &çekirdeği:", numThreads, string.Format(TR,
-                "1–16. Bu bilgisayarda {0} mantıksal çekirdek var. Çok çekirdek indekslemeyi hızlandırır ama Outlook'u yavaşlatabilir.",
-                Environment.ProcessorCount));
+                "1–16. Bu bilgisayarda {0} mantıksal çekirdek var. İndeksleme düşük öncelikte çalışır. Kutu işaretliyse pille çalışırken durur, prize takılınca kaldığı yerden sürer.",
+                Environment.ProcessorCount), chkBattery);
             SettingRow(sgrid, 1, "Bellek sı&nırı (MB):", numMemory, "Arama işlemi bu sınırı aşarsa kapatılır. Yapay zekâ modeliyle indeksleme 4 çekirdekte en çok yaklaşık 2.400 MB, 16 çekirdekte yaklaşık 3.400 MB kullanır.");
             SettingRow(sgrid, 2, "Ara&mada indeksleme (sn):", numBudget,
                 "Ara'ya bastığınızda yeni postaları indekslemek için en çok bu kadar beklenir; kalan iş sonraki aramaya ya da İndeks sekmesine kalır. 0: aramada indeksleme yok.");
+            var keepClosedLabel = new Label { Text = "Kapandıktan s&onra (dk):", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(S(18), S(8), S(8), 0) };
+            numKeepClosed.AccessibleName = "Pencere kapandıktan sonra hazır tut (dk)";
+            numKeepClosed.AccessibleDescription = "Pencere bu süre içinde yeniden açılırsa model yeniden yüklenmez. 0: model pencereyle birlikte kapanır. Kısayol: Alt+O.";
             SettingRow(sgrid, 3, "Yapay &zekâyı hazır tut (dk):", numKeep,
-                "Pencere açıkken model son işten sonra bu kadar dakika bellekte kalır; sonraki arama beklemeden çalışır. Pencere kapanınca model de kapanır. 0: her aramada yeniden yüklenir.");
+                "Pencere açıkken model son işten sonra bu kadar dakika bellekte kalır. Kapandıktan sonra: pencere bu süre içinde yeniden açılırsa model yeniden yüklenmez. 0: hazır tutma yok.",
+                keepClosedLabel, numKeepClosed);
             textSizeBox.DropDownStyle = ComboBoxStyle.DropDownList;
             foreach (int p in new[] { 100, 125, 150, 175, 200 }) textSizeBox.Items.Add("%" + p);
             SettingRow(sgrid, 4, "Yazı &büyüklüğü:", textSizeBox,
@@ -448,14 +464,11 @@ namespace HatirMail
             Load += (s, e) =>
             {
                 FitToScreen(null, 1F); // a scaled window can be larger than a small high-DPI screen (1366x768 at 125%)
-                ShowSettings(settings);
-                AttachmentCopy.Clean(settings.Data); // attachment copies that a program held at the last window close
-                LoadStores(); // also starts the index status check of the first store (a short worker run, no model)
-                ShowPreview();
-                FitColumns(list); FitColumns(folderList);
-                ActiveControl = query; // the window opens with the focus in the search box
-                UpdateRing();
+                OpenFresh();
             };
+            // A hidden window (closed with the model kept, see OnClosing) opens again: the steps of a new window.
+            VisibleChanged += (s, e) => { if (Visible && parked) { parked = false; OpenFresh(); } };
+            powerTimer.Tick += (s, e) => CheckPower();
             // GDI text (as TextRenderer measures it): Outlook does not call SetCompatibleTextRenderingDefault(false). A label
             // without an access key shows "&" as a character (a store, folder or path name can have one).
             foreach (var c in AllControls(this))
@@ -468,8 +481,26 @@ namespace HatirMail
             ApplyColors();
             Measure();
             SetStatus("Hazır. Hatırladıklarınızı yazıp Ara'ya basın. Yapay zekâ modeli yalnız bu pencere açıkken çalışır.");
-            keepTimer.Tick += (s, e) => { keepTimer.Stop(); CloseWarm("keep-alive"); };
+            keepTimer.Tick += (s, e) =>
+            {
+                keepTimer.Stop();
+                CloseWarm("keep-alive");
+                if (parked) EndPark(); // the time after the close is over: the hidden window closes too
+            };
             UpdateButtons();
+        }
+
+        /// <summary>The window open steps (also for a hidden window that opens again): settings, attachment copies, store
+        /// list with its status check (the kept worker: the model is ready at once), preview, focus.</summary>
+        void OpenFresh()
+        {
+            ShowSettings(settings);
+            AttachmentCopy.Clean(settings.Data); // attachment copies that a program held at the last window close
+            LoadStores(); // also starts the index status check of the first store (a short worker run, no model)
+            ShowPreview();
+            FitColumns(list); FitColumns(folderList);
+            ActiveControl = query; // the window opens with the focus in the search box
+            UpdateRing();
         }
 
         public static IEnumerable<Control> AllControls(Control c)
@@ -576,14 +607,28 @@ namespace HatirMail
             g.Controls.Add(l, 0, row); g.Controls.Add(bar, 1, row); g.Controls.Add(pct, 2, row);
         }
 
-        void SettingRow(TableLayoutPanel g, int row, string name, Control field, string help)
+        /// <summary>A setting row: label, field and help text below. extra: more controls right of the field, in the same
+        /// row (a check box, or a label and a second number field); they have their own names and descriptions.</summary>
+        void SettingRow(TableLayoutPanel g, int row, string name, Control field, string help, params Control[] extra)
         {
             field.Width = S(110); field.Margin = new Padding(0, S(6), 0, 0);
             field.AccessibleName = StripAmp(name).TrimEnd(':'); field.AccessibleDescription = help + " Kısayol: Alt+" + char.ToUpper(Mnemonic(name), TR) + ".";
             var num = field as NumericUpDown;
             if (num != null) { num.TextAlign = HorizontalAlignment.Right; num.ThousandsSeparator = false; }
             g.Controls.Add(new Label { Text = name, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, S(8), S(12), 0) }, 0, row * 2);
-            g.Controls.Add(field, 1, row * 2);
+            if (extra.Length == 0) g.Controls.Add(field, 1, row * 2);
+            else
+            {
+                var line = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+                line.Controls.Add(field);
+                foreach (var c in extra)
+                {
+                    if (c is NumericUpDown) { c.Width = S(80); c.Margin = new Padding(0, S(6), 0, 0); ((NumericUpDown)c).TextAlign = HorizontalAlignment.Right; }
+                    else if (c is CheckBox) c.Margin = new Padding(S(18), S(8), 0, 0);
+                    line.Controls.Add(c);
+                }
+                g.Controls.Add(line, 1, row * 2);
+            }
             var h = new Label { Text = help, AutoSize = true, ForeColor = SystemColors.GrayText, Anchor = AnchorStyles.Left | AnchorStyles.Right,
                                 Margin = new Padding(0, S(2), 0, S(6)) }; // anchored left and right: wraps at the cell width
             g.Controls.Add(h, 1, row * 2 + 1);
@@ -963,17 +1008,20 @@ namespace HatirMail
             numMemory.Value = Math.Max(numMemory.Minimum, Math.Min(numMemory.Maximum, s.MemoryLimitMb));
             numBudget.Value = Math.Max(numBudget.Minimum, Math.Min(numBudget.Maximum, s.SearchIndexBudgetS));
             numKeep.Value = Math.Max(numKeep.Minimum, Math.Min(numKeep.Maximum, s.KeepAliveMin));
+            numKeepClosed.Value = Math.Max(numKeepClosed.Minimum, Math.Min(numKeepClosed.Maximum, s.KeepAfterCloseMin));
             chkAtt.Checked = s.Attachments;
             chkFirst.Checked = s.FocusFirstResult;
             textSizeBox.SelectedIndex = Math.Max(0, Math.Min(4, (Settings.ClampTextScale(s.TextScalePct) - 100) / 25));
+            chkBattery.Checked = s.PauseOnBattery;
         }
 
         void SaveSettings()
         {
-            var old = new[] { settings.Threads, settings.MemoryLimitMb, settings.SearchIndexBudgetS, settings.KeepAliveMin, settings.TextScalePct };
-            bool oldAtt = settings.Attachments, oldFirst = settings.FocusFirstResult;
+            var old = new[] { settings.Threads, settings.MemoryLimitMb, settings.SearchIndexBudgetS, settings.KeepAliveMin, settings.KeepAfterCloseMin, settings.TextScalePct };
+            bool oldAtt = settings.Attachments, oldBattery = settings.PauseOnBattery, oldFirst = settings.FocusFirstResult;
             settings.Threads = (int)numThreads.Value; settings.MemoryLimitMb = (int)numMemory.Value;
             settings.SearchIndexBudgetS = (int)numBudget.Value; settings.Attachments = chkAtt.Checked; settings.KeepAliveMin = (int)numKeep.Value;
+            settings.KeepAfterCloseMin = (int)numKeepClosed.Value; settings.PauseOnBattery = chkBattery.Checked;
             settings.FocusFirstResult = chkFirst.Checked; settings.TextScalePct = 100 + 25 * Math.Max(0, textSizeBox.SelectedIndex);
             try
             {
@@ -983,12 +1031,15 @@ namespace HatirMail
                 if (old[0] != settings.Threads || old[1] != settings.MemoryLimitMb || settings.KeepAliveMin == 0) CloseWarm("settings");
                 else if (old[3] != settings.KeepAliveMin && warm != null) ArmKeep();
                 if (oldAtt != settings.Attachments) StartStatus(); // attachment counts change
+                if (!settings.PauseOnBattery && pausedMode != null) ResumePaused(); // a run that waits for AC power starts now
+                UpdatePowerWatch();
                 if (settings.TextScalePct != textPct) ApplyText(settings.TextScalePct); // at once, the focus stays on Kaydet
             }
             catch (Exception ex)
             {
                 settings.Threads = old[0]; settings.MemoryLimitMb = old[1]; settings.SearchIndexBudgetS = old[2]; settings.KeepAliveMin = old[3];
-                settings.TextScalePct = old[4]; settings.Attachments = oldAtt; settings.FocusFirstResult = oldFirst;
+                settings.KeepAfterCloseMin = old[4]; settings.TextScalePct = old[5]; settings.Attachments = oldAtt;
+                settings.PauseOnBattery = oldBattery; settings.FocusFirstResult = oldFirst;
                 SetStatus("Ayarlar kaydedilemedi (" + ex.GetType().Name + "). Eski değerler geçerli.");
             }
         }
@@ -1051,12 +1102,16 @@ namespace HatirMail
 
         public void ClearRecent()
         {
-            if (Change(h => h.Recent.Clear(), "Son aramalar silinemedi")) SetStatus("Son aramalar silindi. Kayıtlı aramalar duruyor.");
+            if (!Change(h => h.Recent.Clear(), "Son aramalar silinemedi")) return;
+            SetStatus("Son aramalar silindi. Kayıtlı aramalar duruyor.");
+            StartStatus(false); // the worker deletes the stored query vectors of these searches now (keep_queries)
         }
 
         void DeleteSaved(string name)
         {
-            if (Change(h => h.Saved.RemoveAll(x => x.Key == name), "Kayıtlı arama silinemedi")) SetStatus("Kayıtlı arama silindi: " + name + ".");
+            if (!Change(h => h.Saved.RemoveAll(x => x.Key == name), "Kayıtlı arama silinemedi")) return;
+            SetStatus("Kayıtlı arama silindi: " + name + ".");
+            StartStatus(false);
         }
 
         public void RunSearch(string q) { query.Text = q; query.SelectionStart = q.Length; StartSearch(); }
@@ -1192,6 +1247,7 @@ namespace HatirMail
         {
             var st = storeBox.SelectedItem as StoreItem;
             if (session != null && session.Mode == "status") { queued = null; session.Kill("store changed"); }
+            pausedMode = null; // an index run that waits for AC power belongs to the old folder list
             folderList.Items.Clear(); cov.Clear();
             folders = new List<FolderInfo>(); allFolders = new List<FolderInfo>(); excludedIds = new HashSet<string>();
             UpdateButtons();
@@ -1860,7 +1916,7 @@ namespace HatirMail
                 return;
             }
             StoreItem st; List<FolderInfo> sel;
-            if (!CanStart(out st, out sel)) return;
+            if (!CanStart(out st, out sel) || BatteryWait("index")) return;
             EventNames.Clear(); modelSeen = false;
             Begin(new WorkerSession(this, source, settings, "index", st.Id, st.Name, sel, ""));
             phase.Text = "İndeksleme başladı: klasör listeleri okunuyor…";
@@ -1877,7 +1933,7 @@ namespace HatirMail
                 return;
             }
             StoreItem st; List<FolderInfo> sel;
-            if (!CanStart(out st, out sel)) return;
+            if (!CanStart(out st, out sel) || BatteryWait("update")) return;
             EventNames.Clear(); modelSeen = false;
             Begin(new WorkerSession(this, source, settings, "update", st.Id, st.Name, sel, ""));
             phase.Text = "Güncelleme başladı: klasör listeleri okunuyor…";
@@ -1885,23 +1941,77 @@ namespace HatirMail
         }
 
         static bool IndexLike(string mode) { return mode == "index" || mode == "update"; } // no query, no time limit, Durdur on the İndeks tab
+
+        // ------------------------------------------------------------------ battery: pause and resume an index run
+        /// <summary>On battery power (setting on) an index run or Güncelle does not start: it waits for AC power. Returns
+        /// true when it waits.</summary>
+        bool BatteryWait(string mode)
+        {
+            if (!settings.PauseOnBattery || !OnBattery()) return false;
+            pausedMode = mode;
+            phase.Text = ModeName(mode) + " pille çalışırken başlamaz. Prize takılınca başlayacak.";
+            SetStatus("Bilgisayar pille çalışıyor: " + ModeName(mode).ToLower(TR) + " prize takılınca başlayacak. Hemen başlatmak için Ayarlar'da pille duraklatmayı kapatın.");
+            UpdateButtons(); UpdatePowerWatch();
+            return true;
+        }
+
+        /// <summary>The power check runs only while it can do something: an index run or Güncelle runs or waits for AC
+        /// power, and the setting is on. No timer at other times.</summary>
+        void UpdatePowerWatch()
+        {
+            bool on = settings.PauseOnBattery && !closing && (pausedMode != null || session != null && IndexLike(session.Mode) && !session.Cancelled);
+            if (on && !powerTimer.Enabled) powerTimer.Start();
+            else if (!on) powerTimer.Stop();
+        }
+
+        /// <summary>Battery: the running index run stops as with Durdur (the work is saved) and waits. AC power: the waiting
+        /// run starts again and goes on where it stopped. ponytail: a stop and a new start, not a pause inside the worker:
+        /// the model loads again at the start (seconds, against minutes of indexing).</summary>
+        void CheckPower()
+        {
+            if (settings.PauseOnBattery)
+            {
+                bool battery = OnBattery();
+                if (battery && pausedMode == null && session != null && IndexLike(session.Mode) && !session.Cancelled)
+                {
+                    pausedMode = session.Mode;
+                    session.Cancel();
+                    SetStatus("Bilgisayar pille çalışıyor: " + ModeName(session.Mode).ToLower(TR) + " duraklatılıyor. Yapılan iş kaydedilir; prize takılınca kaldığı yerden sürer.");
+                    stopBtn.Enabled = indexStopBtn.Enabled = false;
+                }
+                else if (!battery && pausedMode != null && session == null) ResumePaused();
+            }
+            UpdatePowerWatch();
+        }
+
+        void ResumePaused()
+        {
+            string m = pausedMode;
+            pausedMode = null;
+            if (m == "update") StartUpdate(); else StartIndex();
+        }
+
+        public string PausedMode { get { return pausedMode; } }                         // test hooks
+        public int PowerCheckMs { set { powerTimer.Interval = value; } }
         static string ModeName(string mode) { return mode == "index" ? "İndeksleme" : mode == "update" ? "Güncelleme" : mode == "similar" ? "Benzer arama" : "Arama"; }
 
         /// <summary>Index state of the selected folders: a short worker run (no scan, no mail reading). With keep-alive on,
         /// the worker then loads the model in the background when the store has a semantic index (preload), so that the
         /// first search does not wait for it. Runs only on a user action: window open, store change, "Durumu yenile",
         /// after saving settings.</summary>
-        public void StartStatus()
+        public void StartStatus(bool preload = true)
         {
             if (session != null) return;
             var st = storeBox.SelectedItem as StoreItem;
             // The scope can be empty (every folder excluded): the check then only deletes the excluded folders.
             if (st == null || allFolders.Count == 0 || !File.Exists(settings.Python) || !File.Exists(settings.Worker)) return;
             EventNames.Clear();
-            Begin(new WorkerSession(this, source, settings, "status", st.Id, st.Name, folders, "", preload: true));
+            Begin(new WorkerSession(this, source, settings, "status", st.Id, st.Name, folders, "", preload: preload));
         }
 
-        int KeepMs { get { return KeepAliveMsOverride > 0 ? KeepAliveMsOverride : settings.KeepAliveMin * 60000; } }
+        /// <summary>While the window is open: the keep-alive setting. Closed (hidden): the time after the close.</summary>
+        int KeepMs { get { return parked ? KeepAfterCloseMs : KeepAliveMsOverride > 0 ? KeepAliveMsOverride : settings.KeepAliveMin * 60000; } }
+        int KeepAfterCloseMs { get { return KeepAfterCloseMsOverride > 0 ? KeepAfterCloseMsOverride : settings.KeepAfterCloseMin * 60000; } }
 
         // The worker's own limit for the wait between sessions. The window closes the worker first (keepTimer); this only
         // ends a worker whose window hangs. ponytail: 10 min margin; a sleep of the PC can still let the worker end first
@@ -1912,9 +2022,14 @@ namespace HatirMail
         {
             if (closing) return; // the window closes: no new worker
             s.Exclude = excludedIds.ToList(); // every session deletes them from the index (the store cannot change meanwhile)
+            // The query vectors of these searches stay in the index (no model for them next time); the worker deletes the
+            // others. A searches file that could not be read gives no list: then the worker keeps and stores nothing new.
+            s.KeepQueries = history.ReadFailed ? null
+                : history.Recent.Concat(history.Saved.Select(x => x.Value)).Distinct(StringComparer.Ordinal).ToList();
             if (s.Mode != "status" || !purgeAsked) notice = null;
+            if (IndexLike(s.Mode)) pausedMode = null; // this run is the one that waited (or a new one)
             session = s;
-            UpdateButtons(); UpdateSummary();
+            UpdateButtons(); UpdateSummary(); UpdatePowerWatch();
             if (s.Mode != "status") { progress.Visible = true; progress.Style = ProgressBarStyle.Marquee; }
             var p = warm; warm = null; keepTimer.Stop();
             bool fresh = p == null || p.Exited;
@@ -1961,6 +2076,34 @@ namespace HatirMail
             var h = ModelStateChanged; if (h != null) h(null);
         }
 
+        /// <summary>The user closed the window and a kept worker has the model: the window hides and keeps the worker
+        /// for the time after the close. A new open in that time shows this window again (Connect.ShowForm), clean, and
+        /// its first search needs no model load. ponytail: the window hides, the worker does not move to another owner.</summary>
+        void Park()
+        {
+            parked = true;
+            Hide();
+            fillingFilters = true; // a clean window for the next open: no query, results or filters
+            foreach (var b in AllFilterBoxes) b.SelectedIndex = 0;
+            folderBox.SetChecked(new string[0]);
+            FilterChanged();
+            fillingFilters = false;
+            query.Text = ""; list.Items.Clear(); repeatLast = null; ShowPreview();
+            tabs.SelectedTab = tabSearch;
+            AttachmentCopy.Clean(settings.Data);
+            UpdatePowerWatch();
+            ArmKeep(); // KeepMs is the time after the close now
+        }
+
+        /// <summary>The time after the close is over, or the kept worker ended: the hidden window closes for real.</summary>
+        void EndPark()
+        {
+            parked = false;
+            if (IsHandleCreated) BeginInvoke((Action)Shutdown); else Shutdown();
+        }
+
+        public bool IsParked { get { return parked; } } // test hook
+
         // Worker events between sessions (model preload) and of a kept worker.
         internal void OnWorkerEvent(WorkerProcess p, Dictionary<string, object> ev)
         {
@@ -1980,14 +2123,25 @@ namespace HatirMail
             if (p != warm) return;
             warm = null; keepTimer.Stop(); // the kept worker ended by itself (its own limit or a crash)
             var h = ModelStateChanged; if (h != null) h(null);
+            if (parked) EndPark(); // nothing to keep: the hidden window closes
         }
 
         void StopSession()
         {
+            if (pausedMode != null && session == null) // Durdur while a run waits for AC power: it does not start
+            {
+                pausedMode = null;
+                phase.Text = "İndeksleme çalışmıyor.";
+                SetStatus("Bekleyen indeksleme iptal edildi.");
+                UpdateButtons(); UpdatePowerWatch();
+                return;
+            }
             if (session == null || session.Mode == "status") return;
+            if (IndexLike(session.Mode)) pausedMode = null; // a stop by the user: no restart on AC power (a search stop keeps a wait)
             session.Cancel();
             SetStatus("Durduruluyor… Yapılan iş kaydediliyor.");
             stopBtn.Enabled = indexStopBtn.Enabled = false;
+            UpdatePowerWatch();
         }
 
         bool Busy { get { return session != null && session.Mode != "status"; } }
@@ -1996,7 +2150,7 @@ namespace HatirMail
         {
             string m = session != null ? session.Mode : null;
             searchBtn.Enabled = m != "search"; indexBtn.Enabled = updateBtn.Enabled = !Busy; refreshBtn.Enabled = m == null;
-            stopBtn.Enabled = m == "search"; indexStopBtn.Enabled = IndexLike(m);
+            stopBtn.Enabled = m == "search"; indexStopBtn.Enabled = IndexLike(m) || m == null && pausedMode != null;
             storeBox.Enabled = !Busy;
             deleteBtn.Enabled = m == null; // no worker may hold the index files
             excludeBtn.Enabled = m == null && allFolders.Count > 0;
@@ -2023,7 +2177,7 @@ namespace HatirMail
                 case "done":
                     if (ev.ContainsKey("peak_rss_mb") && ev["peak_rss_mb"] != null) WorkerPeakMb = Convert.ToDouble(ev["peak_rss_mb"]);
                     string stt = ev.ContainsKey("status") ? ev["status"] as string : "";
-                    LastDoneStats = Dict(ev, "stats");
+                    LastDoneStats = Dict(ev, "stats"); LastDoneTiming = Dict(ev, "timing");
                     if (ev.ContainsKey("facets") && ev["facets"] != null) ShowFacets(Dict(ev, "facets")); // older worker: lists stay
                     if (stt == "error" && mode != "status")
                         SetStatus(ModeName(mode) + " tamamlanamadı (" + (ev.ContainsKey("error") ? ev["error"] : "") + "). Yeniden deneyin.");
@@ -2061,7 +2215,17 @@ namespace HatirMail
                              (s.Mode == "update" ? " Kaldığı yerden sürdürmek için Güncelle'ye basın." : " Kaldığı yerden sürdürmek için İndekslemeyi başlat'a basın.");
             if (s.Mode != "status" && reason != "ok" && reason != "cancelled" && !status.Text.Contains("tamamlanamadı"))
                 SetStatus(ModeName(s.Mode) + " durdu: " + ReasonText(reason) + ". Arama işlemi kapatıldı.");
-            UpdateButtons(); UpdateSummary();
+            if (IndexLike(s.Mode) && pausedMode != null)
+            {
+                if (reason == "ok") pausedMode = null; // it ended before the stop: nothing to resume
+                else
+                {
+                    phase.Text = ModeName(s.Mode) + " pille çalışırken duraklatıldı. Prize takılınca kaldığı yerden sürecek.";
+                    SetStatus("Bilgisayar pille çalışıyor: " + ModeName(s.Mode).ToLower(TR) + " duraklatıldı. Yapılan iş kaydedildi; prize takılınca kaldığı yerden sürecek.");
+                }
+            }
+            UpdateButtons(); UpdateSummary(); UpdatePowerWatch();
+            if (parked && warm == null) EndPark(); // the hidden window has no worker to keep (the status check failed)
             var h = SessionFinished; if (h != null) h(s.Mode, reason);
             var next = queued; queued = null;
             if (next != null && !closing) next();
@@ -2431,10 +2595,12 @@ namespace HatirMail
         }
 
         // ------------------------------------------------------------------ closing
-        // The worker never outlives the window. During an index run the user confirms first (or minimizes the window).
+        // A running session stops with the window. During an index run the user confirms first (or minimizes the window).
+        // The idle worker and its model stay only in a hidden window, for the time after the close (Park).
         void OnClosing(object sender, FormClosingEventArgs e)
         {
-            if (!allowClose && e.CloseReason == CloseReason.UserClosing && session != null && IndexLike(session.Mode) &&
+            bool user = !allowClose && e.CloseReason == CloseReason.UserClosing;
+            if (user && session != null && IndexLike(session.Mode) &&
                 MessageBox.Show(this, ModeName(session.Mode) + " sürüyor. Pencere kapanırsa " + ModeName(session.Mode).ToLower(TR) + " durur (yapılan iş kaydedilir).\n\n" +
                                 "Kapatılsın mı? İşin sürmesi için Hayır'a basın ve pencereyi simge durumuna küçültün.",
                                 "HatırMail", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
@@ -2442,9 +2608,19 @@ namespace HatirMail
                 e.Cancel = true;
                 return;
             }
-            closing = true; queued = null; // a search waiting for the end of an index run is dropped
+            queued = null; pausedMode = null; // a search waiting for the end of an index run, an index run waiting for AC power
+            if (user && KeepAfterCloseMs > 0)
+            {
+                // A status check (about 1 s, right after the window open) ends by itself: its worker becomes the kept one.
+                // Other sessions stop, and their worker ends (a stopped session keeps no worker).
+                bool status = session != null && session.Mode == "status";
+                if (session != null && !status) session.Stop("window closed");
+                if (status || warm != null && !warm.Exited) { e.Cancel = true; Park(); return; }
+            }
+            closing = true;
+            UpdatePowerWatch();
             if (session != null) session.Stop("window closed");
-            CloseWarm("window closed"); // the model never outlives the window
+            CloseWarm("window closed"); // the model does not outlive the window (or the hidden window)
             AttachmentCopy.Clean(settings.Data); // opened attachment copies (a file that a program holds: next window open)
         }
 
@@ -2468,7 +2644,7 @@ namespace HatirMail
         public bool ModelLoaded { get { return modelSeen; } }
         public string SessionMode { get { return session != null ? session.Mode : null; } }
         public string LastPhase; public int LastDone, LastTotal; public bool LastSemantic; // test hooks: last progress / results
-        public Dictionary<string, object> LastDoneStats;                                  // test hook: stats of the last done
+        public Dictionary<string, object> LastDoneStats, LastDoneTiming;                  // test hooks: stats and timing of the last done
         public ComboBox[] FilterBoxes { get { return AllFilterBoxes; } } // test hook: Gönderen, Alıcı, Klasör, Tarih, Ek
         public DateTimePicker[] DatePickers { get { return new[] { dateFrom, dateTo }; } }    // test hooks: filters, sorting, result menu
         public bool ClearFiltersEnabled { get { return clearFiltersBtn.Enabled; } }
@@ -2507,6 +2683,7 @@ namespace HatirMail
             return r.ContainsKey("match_attachment") ? r["match_attachment"] as string : null;
         }
         public int WorkerPid { get { return session != null ? session.Pid : 0; } }
+        public string WorkerPriority { get { return session != null && session.Proc != null ? session.Proc.PriorityName : ""; } } // test hook
         public RichTextBox PreviewBox { get { return preview; } }
         public List<KeyValuePair<string, string>> FolderIds() { return folders.Select(f => new KeyValuePair<string, string>(f.Id, f.Path)).ToList(); }
         public List<string> ListedFolderIds() { return folderList.Items.Cast<ListViewItem>().Select(i => ((FolderInfo)i.Tag).Id).ToList(); } // test hook
@@ -2671,6 +2848,16 @@ namespace HatirMail
 
         public void Kill() { try { if (proc != null && !proc.HasExited) proc.Kill(); } catch { } }
 
+        /// <summary>Full indexing and Güncelle: Idle (Windows gives the worker only CPU time that no other program wants:
+        /// Outlook and the other programs stay fast). Search, status, similar: BelowNormal (the user waits for it).</summary>
+        public void SetLowPriority(bool idle)
+        {
+            try { if (proc != null && !proc.HasExited) proc.PriorityClass = idle ? ProcessPriorityClass.Idle : ProcessPriorityClass.BelowNormal; }
+            catch { } // mono without permission, or the process just ended
+        }
+
+        public string PriorityName { get { try { return proc != null && !proc.HasExited ? proc.PriorityClass.ToString() : ""; } catch { return ""; } } } // test hook
+
         /// <summary>End the process: close stdin (a kept worker exits at once), wait up to 5 s, kill, close the job
         /// (kill-on-close: no worker process can stay alive after this).</summary>
         public void Close()
@@ -2713,6 +2900,7 @@ namespace HatirMail
         public List<string> Exclude = new List<string>(); // folder ids excluded in Ayarlar: the worker deletes them from the index
         public Dictionary<string, object> Filters;        // Ara filters (sender, recipient keys); null = none
         public string SimilarEid;                         // mode similar: the mail of "Benzerlerini bul"
+        public List<string> KeepQueries;                  // recent + saved searches: their query vectors stay in the index; null = not sent
         /// <summary>status and similar: no scan, no mail reading, no attachment folder (the worker only reads its index).</summary>
         public bool Light { get { return Mode == "status" || Mode == "similar"; } }
 
@@ -2729,6 +2917,7 @@ namespace HatirMail
         {
             Proc = proc;
             proc.Current = this;
+            proc.SetLowPriority(Mode == "index" || Mode == "update"); // a kept worker gets the priority of each session
             KeepProcess = keepAliveS > 0;
             if (Mode == "search")
             {
@@ -2756,6 +2945,7 @@ namespace HatirMail
             if (Mode == "search") begin["index_budget_s"] = settings.SearchIndexBudgetS;
             if (Filters != null) begin["filters"] = Filters;
             if (SimilarEid != null) begin["similar_eid"] = SimilarEid;
+            if (KeepQueries != null) begin["keep_queries"] = KeepQueries;
             Send(begin);
         }
 

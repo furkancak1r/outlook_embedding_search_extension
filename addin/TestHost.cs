@@ -19,6 +19,12 @@
 //          --update EID         with --index: the mail EID is not in Outlook during the full index (it comes later). Then
 //                               "Güncelle" must read only this mail (1 new, in less time than the full index), a second
 //                               "Güncelle" must find nothing ("İndeks güncel"), and the search must find EID
+//          --expect-no-model    the search must give semantic final results without a model load (stored query vector)
+//          --park MS            window open (model preload), then the user closes it: the window hides and keeps the same
+//                               worker; open again: no new worker, the model is ready, a search loads no model; close
+//                               again: the worker and the window must be gone after MS (the time after the close)
+//          --battery-pause MS   with --index: MS after the start the PC goes on battery: the index run stops (work kept)
+//                               and waits; then AC power: it starts again and completes; the index run is at Idle priority
 //        HatirMail.TestHost.exe <corpus.json> <hatirmail_home> --layout-check [screenshot_dir]
 //        HatirMail.TestHost.exe - <hatirmail_home> --history-check   (recent/saved searches file only, no window: runs on mono)
 //        HatirMail.TestHost.exe <att_corpus.json> <hatirmail_home> --attach-check   ("Eki aç" file rules, no window: runs on mono)
@@ -79,8 +85,13 @@ namespace HatirMail
             if (args[2] == "--row-text-check") return RowTextCheck() ? 0 : 1;
             if (args[2] == "--similar") return SimilarRun(new JsonSource(args[0]), settings, args[3], args[4]);
             if (args[2] == "--layout-check") return LayoutCheck(new JsonSource(args[0]), settings, args.Length > 3 ? args[3] : null);
+            if (args.Contains("--park")) return ParkRun(new JsonSource(args[0]), settings, args[2], Opt(args, "--park", 5000));
             string expected = args.Length > 3 && !args[3].StartsWith("--") ? args[3] : null;
             bool index = args.Contains("--index"), expectKeyword = args.Contains("--expect-keyword"), expectIncomplete = args.Contains("--expect-incomplete");
+            bool expectNoModel = args.Contains("--expect-no-model");
+            int batteryMs = Opt(args, "--battery-pause", -1);
+            bool battery = false, batteryOk = batteryMs < 0;
+            int indexRuns = 0;
             int stopAfter = Opt(args, "--stop-after-ms", -1), budget = Opt(args, "--budget", -1), maxMs = Opt(args, "--max-ms", -1);
             int warmRuns = Opt(args, "--warm", 0), keepMs = Opt(args, "--keep-alive-ms", 0), keepMin = Opt(args, "--keep-alive-min", -1);
             string openAtt = Array.IndexOf(args, "--open-att") > 0 ? args[Array.IndexOf(args, "--open-att") + 1] : null;
@@ -100,6 +111,7 @@ namespace HatirMail
             SearchForm form = null;
             Func<string, int> stat = k => form.LastDoneStats != null && form.LastDoneStats.ContainsKey(k) ? Convert.ToInt32(form.LastDoneStats[k]) : -1;
             form = new SearchForm(slow, settings) { ShowInTaskbar = false, WindowState = FormWindowState.Minimized };
+            if (batteryMs >= 0) { settings.PauseOnBattery = true; form.OnBattery = () => battery; form.PowerCheckMs = 500; }
             var launched = new List<string>();
             form.Launch = p => launched.Add(p); // no program starts in the test: record the path
             int code = 1, searches = 0;
@@ -134,6 +146,14 @@ namespace HatirMail
                 sw.Restart();
                 if (index) form.StartIndex(); else { form.SetQuery(args[2]); form.StartSearch(); }
                 if (form.SessionMode == null) { Console.WriteLine("FAIL: no worker started"); form.Shutdown(); return; }
+                // Priority: an index run at Idle, a search at BelowNormal (Windows; mono gives other names or none).
+                Console.WriteLine("worker_priority mode=" + form.SessionMode + " priority=" + form.WorkerPriority);
+                if (batteryMs >= 0)
+                {
+                    var t = new Timer { Interval = Math.Max(1, batteryMs) };
+                    t.Tick += (s2, e2) => { t.Stop(); battery = true; Console.WriteLine("battery_on ms=" + sw.ElapsedMilliseconds + " mode=" + form.SessionMode); };
+                    t.Start();
+                }
                 if (stopAfter >= 0)
                 {
                     var t = new Timer { Interval = Math.Max(1, stopAfter) };
@@ -176,6 +196,31 @@ namespace HatirMail
                     return;
                 }
                 Console.WriteLine("events=" + string.Join(",", form.EventNames.Distinct()) + " last_progress=" + form.LastPhase + " " + form.LastDone + "/" + form.LastTotal);
+                if (mode == "index" && batteryMs >= 0 && ++indexRuns == 1)
+                {
+                    // On battery: the run stopped (its work is kept) and waits for AC power; it must not start on battery.
+                    bool paused = reason == "cancelled" && form.PausedMode == "index" && !form.IndexComplete && form.PhaseText.Contains("pille");
+                    Console.WriteLine("battery_pause reason={0} waiting={1} complete={2} -> {3}", reason, form.PausedMode, form.IndexComplete, paused ? "ok" : "FAIL");
+                    batteryOk = paused;
+                    if (!paused) { form.Shutdown(); return; }
+                    var t = new Timer { Interval = 2000 };
+                    t.Tick += (s2, e2) =>
+                    {
+                        t.Stop();
+                        bool still = form.SessionMode == null && form.PausedMode == "index";
+                        Console.WriteLine("battery_wait no_start={0} -> {1}", still, still ? "ok" : "FAIL");
+                        batteryOk &= still;
+                        battery = false; sw.Restart(); // AC power: the index run starts again by itself
+                    };
+                    t.Start();
+                    return;
+                }
+                if (mode == "index" && batteryMs >= 0)
+                {
+                    bool resumed = reason == "ok" && form.IndexComplete && form.PausedMode == null;
+                    Console.WriteLine("battery_resume reason={0} complete={1} ms={2} -> {3}", reason, form.IndexComplete, sw.ElapsedMilliseconds, resumed ? "ok" : "FAIL");
+                    batteryOk &= resumed;
+                }
                 if (mode == "index" && stopAfter < 0)
                 {
                     // The full index is done: now the search, as the user does after "İndekslemeyi başlat".
@@ -184,6 +229,7 @@ namespace HatirMail
                     sw.Restart();
                     if (updateEid != null) { slow.Hidden.Clear(); form.StartUpdate(); return; } // the mail comes in
                     form.SetQuery(args[2]); form.StartSearch();
+                    Console.WriteLine("worker_priority mode=" + form.SessionMode + " priority=" + form.WorkerPriority); // the kept worker of the index run
                     return;
                 }
                 if (mode == "update")
@@ -202,6 +248,7 @@ namespace HatirMail
                     return;
                 }
                 bool complete = form.IndexComplete; // before Report closes the window
+                bool modelLoadedAtEnd = form.ModelLoaded, semanticAtEnd = form.LastSemantic;
                 long ms = sw.ElapsedMilliseconds;
                 string opened = null;
                 if (openAtt != null && reason == "ok" && form.ResultCount > 0)
@@ -224,6 +271,15 @@ namespace HatirMail
                 if (expectIncomplete && complete) { Console.WriteLine("FAIL: index complete after a time-limited search"); code = 1; }
                 if (maxMs >= 0 && ms > maxMs) { Console.WriteLine("FAIL: search took " + ms + " ms, limit " + maxMs); code = 1; }
                 if (!excludeOk) { Console.WriteLine("FAIL: excluded folder"); code = 1; }
+                if (!batteryOk) { Console.WriteLine("FAIL: battery pause"); code = 1; }
+                if (expectNoModel)
+                {
+                    // A recent search (this query ran before in this data folder): the stored query vector, no model.
+                    bool cached = form.LastDoneTiming != null && true.Equals(form.LastDoneTiming.ContainsKey("query_cached") ? form.LastDoneTiming["query_cached"] : null);
+                    bool nm = reason == "ok" && !modelLoadedAtEnd && semanticAtEnd && cached;
+                    Console.WriteLine("query_vector_cache model_loaded={0} semantic={1} query_cached={2} ms={3} -> {4}", modelLoadedAtEnd, semanticAtEnd, cached, ms, nm ? "ok" : "FAIL");
+                    if (!nm) { Console.WriteLine("FAIL: stored query vector"); code = 1; }
+                }
                 if (updateEid != null)
                 {
                     // Güncelle read one mail: it must take less time than the full index (both with the model load).
@@ -250,6 +306,71 @@ namespace HatirMail
                 // No store/folder list on an empty home: start at once (no status check runs then).
                 if (!File.Exists(settings.Python)) startMain();
             };
+            Application.Run(form);
+            return code;
+        }
+
+        // Pencere kapandıktan sonra modeli tut (feature 1), the real window and worker: open (status check + model preload),
+        // close by the user -> hidden, the same worker alive; open again (Show, as Connect.ShowForm) -> status check on the
+        // same worker (no new worker), model ready, a search without a model load; close again -> after parkMs the worker
+        // and the window are gone. Needs a full index with vectors in the data folder (run --index first).
+        static int ParkRun(JsonSource src, Settings settings, string q, int parkMs)
+        {
+            var form = new SearchForm(src, settings) { ShowInTaskbar = false, WindowState = FormWindowState.Minimized };
+            form.KeepAfterCloseMsOverride = parkMs;
+            var pids = new List<int>();
+            int code = 1, step = 0, pid0 = 0;
+            bool ok = true;
+            var sw = Stopwatch.StartNew();
+            Action<string, bool> check = (n, pass) => { Console.WriteLine("park_" + n + "=" + (pass ? "ok" : "FAIL") + " ms=" + sw.ElapsedMilliseconds); ok &= pass; };
+            form.WorkerStarted += (mode, pid) => { pids.Add(pid); Console.WriteLine("worker_start mode=" + mode + " pid=" + pid); };
+            form.ModelStateChanged += state =>
+            {
+                if (state != "ready") return;
+                if (step == 0)
+                {
+                    // Window open, model ready: the user closes the window.
+                    step = 1; pid0 = form.WarmPid;
+                    form.BeginInvoke((Action)(() =>
+                    {
+                        form.Close();
+                        check("hidden_worker_kept", !form.IsDisposed && !form.Visible && form.IsParked && pid0 != 0 && form.WarmPid == pid0 && Alive(pid0));
+                        step = 2; sw.Restart();
+                        form.Show(); // the ribbon button again
+                    }));
+                }
+                else if (step == 2)
+                {
+                    // The status check of the new open ran on the kept worker: the model is ready at once.
+                    step = 3;
+                    check("reopen_same_worker", pids.Count == 1 && form.WarmPid == pid0 && !form.IsParked && form.Visible);
+                    form.BeginInvoke((Action)(() => { sw.Restart(); form.SetQuery(q); form.StartSearch(); }));
+                }
+            };
+            form.SessionFinished += (mode, reason) =>
+            {
+                Console.WriteLine("session_end mode=" + mode + " reason=" + reason + " ms=" + sw.ElapsedMilliseconds);
+                if (reason != "ok") { check("session_" + mode, false); form.Shutdown(); return; }
+                if (mode != "search" || step != 3) return;
+                check("search_no_model_load", !form.ModelLoaded && form.LastSemantic && form.ResultCount > 0 && pids.Count == 1);
+                step = 4;
+                form.BeginInvoke((Action)(() =>
+                {
+                    sw.Restart();
+                    form.Close(); // hidden again; after parkMs the worker and the window end
+                    check("hidden_again", form.IsParked && Alive(pid0));
+                }));
+            };
+            form.FormClosed += (s, e) =>
+            {
+                bool gone = !Alive(pid0);
+                check("closed_after_time", step == 4 && gone && sw.ElapsedMilliseconds >= parkMs);
+                code = ok ? 0 : 1;
+                Console.WriteLine(ok ? "PASS" : "FAIL");
+            };
+            var guard = new Timer { Interval = 300000 };
+            guard.Tick += (s, e) => { guard.Stop(); Console.WriteLine("park timeout step=" + step); ok = false; form.Shutdown(); };
+            guard.Start();
             Application.Run(form);
             return code;
         }
@@ -540,17 +661,20 @@ namespace HatirMail
             var save = all.OfType<Button>().First(x => x.Text == "&Kaydet");
             bool ok = true;
             var first = all.OfType<CheckBox>().First(x => x.AccessibleName == "Arama bitince ilk sonuca geç");
-            foreach (var v in new[] { new { T = 6, M = 6144, B = 45, A = false, K = 30, F = true }, new { T = 2, M = 3072, B = 0, A = true, K = 0, F = false } })
+            var battery = all.OfType<CheckBox>().First(x => x.AccessibleName == "Pille çalışırken indekslemeyi duraklat");
+            foreach (var v in new[] { new { T = 6, M = 6144, B = 45, A = false, K = 30, C = 7, P = false, F = true }, new { T = 2, M = 3072, B = 0, A = true, K = 0, C = 0, P = true, F = false } })
             {
                 num("İşlemci çekirdeği").Value = v.T; num("Bellek sınırı (MB)").Value = v.M; num("Aramada indeksleme (sn)").Value = v.B;
-                num("Yapay zekâyı hazır tut (dk)").Value = v.K;
-                att.Checked = v.A; first.Checked = v.F;
+                num("Yapay zekâyı hazır tut (dk)").Value = v.K; num("Pencere kapandıktan sonra hazır tut (dk)").Value = v.C;
+                att.Checked = v.A; battery.Checked = v.P; first.Checked = v.F;
                 save.PerformClick();
                 var r = Settings.Load();
-                bool same = r.Threads == v.T && r.MemoryLimitMb == v.M && r.SearchIndexBudgetS == v.B && r.Attachments == v.A &&
-                            r.KeepAliveMin == v.K && r.FocusFirstResult == v.F && r.TextScalePct == 100 && form.StatusText.StartsWith("Ayarlar kaydedildi");
-                Console.WriteLine("settings_save threads={0} memory={1} budget={2} attachments={3} keep_alive_min={4} first_result={5} text={6} -> {7}", r.Threads,
-                                  r.MemoryLimitMb, r.SearchIndexBudgetS, r.Attachments, r.KeepAliveMin, r.FocusFirstResult, r.TextScalePct, same ? "ok" : "FAIL");
+                bool same = r.Threads == v.T && r.MemoryLimitMb == v.M && r.SearchIndexBudgetS == v.B && r.Attachments == v.A && r.KeepAliveMin == v.K &&
+                            r.KeepAfterCloseMin == v.C && r.PauseOnBattery == v.P && r.FocusFirstResult == v.F && r.TextScalePct == 100 &&
+                            form.StatusText.StartsWith("Ayarlar kaydedildi");
+                Console.WriteLine("settings_save threads={0} memory={1} budget={2} attachments={3} keep_alive_min={4} after_close_min={5} battery={6} first_result={7} text={8} -> {9}",
+                                  r.Threads, r.MemoryLimitMb, r.SearchIndexBudgetS, r.Attachments, r.KeepAliveMin, r.KeepAfterCloseMin, r.PauseOnBattery,
+                                  r.FocusFirstResult, r.TextScalePct, same ? "ok" : "FAIL");
                 ok &= same;
             }
             File.WriteAllText(settings.ConfigFile, "{\"threads\": 99, \"memory_limit_mb\": 10, \"search_index_budget_s\": -5, \"embed_budget_s\": 7, \"keep_alive_min\": 999, \"text_scale_pct\": 999}");
@@ -1120,7 +1244,17 @@ namespace HatirMail
                 check("wrong_container", r.ExcludedFolders.Count == 0 && r.Threads == 3 && r.KeepAliveMin == 5);
                 File.WriteAllText(s.ConfigFile, "{\"threads\": 4}"); // an older install: the default names apply
                 r = Settings.Load();
-                check("old_file_defaults", r.ExcludedFolders.Count == 0 && r.ExcludedIn("S", all).Contains("JUNK"));
+                check("old_file_defaults", r.ExcludedFolders.Count == 0 && r.ExcludedIn("S", all).Contains("JUNK") &&
+                                           r.KeepAfterCloseMin == 5 && r.PauseOnBattery);
+                // The after-close time and the battery pause: saved, read back, clamped (a hand edit).
+                r.KeepAfterCloseMin = 0; r.PauseOnBattery = false; r.Save();
+                var r2 = Settings.Load();
+                File.WriteAllText(s.ConfigFile, "{\"keep_after_close_min\": 99}");
+                var r3 = Settings.Load();
+                File.WriteAllText(s.ConfigFile, "{\"keep_after_close_min\": -4, \"pause_on_battery\": true}");
+                var r4 = Settings.Load();
+                check("close_battery_settings", r2.KeepAfterCloseMin == 0 && !r2.PauseOnBattery && r3.KeepAfterCloseMin == 10 &&
+                                                r4.KeepAfterCloseMin == 0 && r4.PauseOnBattery);
                 // A write that fails (the file name is a folder) throws and leaves no temp file.
                 File.Delete(s.ConfigFile); Directory.CreateDirectory(s.ConfigFile);
                 bool threw = false;

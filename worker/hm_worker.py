@@ -16,6 +16,8 @@ The Outlook add-in starts this process only on a user action (window open, Ara, 
 
 Every mode first deletes the mails of the folders in begin.exclude (excluded in Ayarlar) from the index file
 (Store.purge_folders); done.excluded_removed counts them. An excluded folder in the scope is a protocol error.
+begin.keep_queries (recent and saved searches of the add-in): every mode then deletes the stored query vectors of other
+queries; a search of one of them uses its stored vector (no model load; done.timing.query_cached).
 
 Keep-alive (begin.keep_alive_s > 0, while the search window is open): after done(ok) the process waits for the next
 begin and keeps the model in memory. preload (status mode): load the model after done when the scope has vectors
@@ -43,11 +45,13 @@ os.environ.update(QUIET_ENV)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hm_attach  # noqa: E402
+import hm_embed  # noqa: E402  (no model and no ONNX Runtime import here: load_encoder loads them)
 import hm_index  # noqa: E402
 import hm_search  # noqa: E402
 import hm_store  # noqa: E402
 from hm_embed import DIM, MODEL_REVISION  # noqa: E402
 from hm_store import INDEX_VERSION, Store  # noqa: E402
+from hm_text import text_hash  # noqa: E402
 
 
 class Cancelled(Exception):
@@ -163,10 +167,65 @@ def load_encoder(args, enc):
     needs the model during the preload (preload thread) waits for that load and does not load a second copy."""
     with _load_lock:
         if "e" not in enc:
-            import hm_embed
             threads = embed_runs(args.threads, args.memory_mb, os.cpu_count())[1]
             enc["e"] = (hm_embed.FakeEncoder if args.fake_encoder else hm_embed.Encoder)(args.model, threads)
     return enc["e"]
+
+
+def query_key(args, model_text):
+    """qvecs key of a query (model_text = hm_embed.query_text(query)): a hash of the settings that can change the vector
+    bits (encoder kind, ONNX Runtime version, threads per model run: 16 threads gave other bits on 2.19) and of the
+    model input. The file holds no query text. ponytail: the CPU type is not in the key (the index file stays on its
+    PC); a copy of the file on another PC can give a vector that differs in the last bits."""
+    threads = embed_runs(args.threads, args.memory_mb, os.cpu_count())[1]
+    kind = "fake" if args.fake_encoder else "onnx-" + hm_embed.runtime_version()
+    return text_hash("%s|%d|%s" % (kind, threads, model_text))
+
+
+def keep_keys(args, begin):
+    """qvecs keys of begin.keep_queries (the recent and saved searches of the add-in), or None without the field (an
+    older add-in, eval): then the worker neither reads nor writes query vectors."""
+    keep = begin.get("keep_queries")
+    if keep is None:
+        return None
+    if not isinstance(keep, list) or any(not isinstance(q, str) for q in keep):
+        raise ProtocolError("bad keep_queries")
+    # The same text form as the session query (strip, 500 chars).
+    return {query_key(args, hm_embed.query_text(q.strip()[:500])) for q in keep[:500] if q.strip()}
+
+
+def prune_qvecs(store, keys):
+    """Delete the query vectors of searches that the add-in does not list any more (cleared, deleted, pushed out of the
+    20 recent ones) and of other settings or models. keys None (no keep_queries): nothing changes."""
+    if keys is not None:
+        with store.tx():
+            store.prune_qvecs(keys, MODEL_REVISION)
+
+
+class QueryVector:
+    """The query encoder of a search session (hm_search.run calls encode([model text])). A recent or saved search of
+    the add-in that was encoded before gets its stored vector (qvecs): no model load, no model run. The stored vector
+    is the float32 model output with the same settings (query_key), so the results are the same as with a new encode.
+    Other queries: the model, as before. new: vectors of kept queries for the store after the session."""
+
+    def __init__(self, store, keys, key_of, get_encoder):
+        self.store, self.keys, self.key_of, self.get_encoder = store, keys or set(), key_of, get_encoder
+        self.cached, self.new = False, {}
+
+    def stored(self, model_text):
+        k = self.key_of(model_text)
+        v = self.store.qvec(k, MODEL_REVISION) if k in self.keys else None
+        return v if v is not None and len(v) == DIM else None
+
+    def encode(self, texts, max_tokens=hm_embed.MAX_QUERY_TOKENS):
+        v = self.stored(texts[0]) if len(texts) == 1 else None
+        if v is not None:
+            self.cached = True
+            return v[None, :]
+        out = self.get_encoder().encode(texts, max_tokens=max_tokens)
+        if len(texts) == 1 and self.key_of(texts[0]) in self.keys:
+            self.new[self.key_of(texts[0])] = out[0]
+        return out
 
 
 def session(args, inbox, out, ctx, enc, begin=None):
@@ -207,6 +266,7 @@ def session(args, inbox, out, ctx, enc, begin=None):
                 filters[k] = datetime.fromisoformat(filters[k]).replace(tzinfo=None).isoformat(timespec="seconds")
             except ValueError:
                 raise ProtocolError("bad filters") from None
+    keys = keep_keys(args, begin)  # None: no query vector cache in this session
     now = datetime.fromisoformat(begin.get("now") or datetime.now().isoformat(timespec="seconds"))
     top_k = max(1, min(int(begin.get("top_k", 10)), 50))
     # Search mode: attachment reading and embedding stop index_budget_s after the read phase starts (the add-in
@@ -226,6 +286,7 @@ def session(args, inbox, out, ctx, enc, begin=None):
         store = Store(str(path) if path.exists() else ":memory:", MODEL_REVISION)
         ctx["store"] = store
         removed = store.purge_folders(exclude)
+        prune_qvecs(store, keys)
         ctx["cov"] = lambda: store.coverage(scope, atts=atts_on)
         ctx["facets"] = lambda: hm_search.facets(store)
         hello()
@@ -247,6 +308,7 @@ def session(args, inbox, out, ctx, enc, begin=None):
     store = Store(str(path), MODEL_REVISION)
     ctx["store"] = store
     removed = store.purge_folders(exclude)
+    prune_qvecs(store, keys)
     with store.tx():
         store.set_meta("store_name", store_info.get("name", ""))
         stats["att_crashed"] = store.fail_stale()
@@ -376,12 +438,21 @@ def session(args, inbox, out, ctx, enc, begin=None):
             raise Cancelled()
         return enc["e"]
 
+    # The query vector: stored for a recent or saved search (no model), else the model.
+    model_text = hm_embed.query_text(query)
+    qv = QueryVector(store, keys, lambda s: query_key(args, s), get_encoder)
+
+    def query_encoder():
+        if qv.stored(model_text) is None:
+            get_encoder()  # the load is not part of the stage time (and of the deadline extension) below
+        return qv
+
     # 3b) Semantic results with the vectors that the index has now, when this search still has attachment or embedding
     #     work (it can take until the deadline). The final results come after that work, as before, and replace these.
     #     The deadline grows by the time of this run: the indexing work of the search stays the same.
     if mode == "search" and query and budget != 0 and cov()["embedded"] and (
             store.missing_vectors(scope, MODEL_REVISION) or (att_dir and store.pending_atts(scope))):
-        encoder = get_encoder()
+        encoder = query_encoder()
         t = time.perf_counter()
         res = hm_search.run(store, query, now, scope, encoder=encoder, model_rev=MODEL_REVISION, dim=DIM, top_k=top_k,
                             allow=allow, memo=memo)
@@ -428,11 +499,16 @@ def session(args, inbox, out, ctx, enc, begin=None):
     if mode == "search":
         t = time.perf_counter()
         # No semantic index yet (budget 0 or a new store): keyword results only, the model is not loaded.
-        encoder = get_encoder() if query and cov()["embedded"] else None
+        encoder = query_encoder() if query and cov()["embedded"] else None
         res = hm_search.run(store, query, now, scope, encoder=encoder, model_rev=MODEL_REVISION, dim=DIM, top_k=top_k,
                             allow=allow, memo=memo)
         timing["final_s"] = round(time.perf_counter() - t, 3)
         out.send("results", stage="final", coverage=cov(), **res)
+        timing["query_cached"] = qv.cached
+        if qv.new:  # a recent or saved search, encoded now: the next time without the model
+            with store.tx():
+                for k, v in qv.new.items():
+                    store.put_qvec(k, MODEL_REVISION, v)
     timing["total_s"] = round(time.perf_counter() - t0, 3)
     return {"mode": mode, "timing": timing, "stats": stats, "model_loaded": "e" in enc, "excluded_removed": removed}
 

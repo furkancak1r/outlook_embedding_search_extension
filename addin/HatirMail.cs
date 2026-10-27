@@ -7,8 +7,11 @@
 //    The add-in reads mail with the Outlook Object Model on the UI thread (read-only properties only)
 //    and sends JSON lines over the anonymous stdin/stdout pipes of its own child process. No port, no network.
 //  - While the window is open the worker keeps the model loaded for the next search (setting keep_alive_min,
-//    0 = exit after each search). Window close, Outlook close, cancel, error, timeout and keep-alive expiry end it
-//    (Job Object kill-on-close).
+//    0 = exit after each search). After a window close the window only hides and keeps the idle worker for
+//    keep_after_close_min (0-10; 0 = close at once): a new open in that time needs no model load. Outlook close,
+//    cancel, error, timeout and the end of these times end the worker (Job Object kill-on-close).
+//  - Full indexing and Güncelle run at Idle priority; with pause_on_battery they stop on battery power and start
+//    again on AC power (the user's run goes on; no other background work).
 //  - "Outlook'ta Aç" calls Namespace.GetItemFromID(...).Display(). It never sends, deletes, moves or marks mail.
 //  - "Eki aç" saves a copy of the matched attachment (Attachment.SaveAsFile) and opens the copy (AttachmentCopy).
 using System;
@@ -191,6 +194,8 @@ namespace HatirMail
         public int SessionTimeoutS = 7200;  // hard limit for one search (an index run has none: it stops when idle)
         public bool Attachments = true;     // read attachment content (Excel, PDF, Word, pictures with OCR, ...)
         public int KeepAliveMin = 10;       // the model stays loaded so long after the last work while the window is open (0 = no)
+        public int KeepAfterCloseMin = 5;   // after the window close: the hidden window keeps the model so long (0-10, 0 = no)
+        public bool PauseOnBattery = true;  // a full index run or Güncelle stops on battery and starts again on AC power
         public int TextScalePct = 100;      // text size of the window (Ayarlar): 100, 125, 150, 175 or 200
         public bool FocusFirstResult;       // after a search the focus goes to the first result (Ayarlar)
         /// <summary>Folders not indexed (Ayarlar "Klasörleri hariç tut"): store id -> folder entry ids. A checked folder
@@ -242,6 +247,8 @@ namespace HatirMail
                     if (d.TryGetValue("session_timeout_s", out v)) s.SessionTimeoutS = Convert.ToInt32(v);
                     if (d.TryGetValue("attachments", out v)) s.Attachments = Convert.ToBoolean(v);
                     if (d.TryGetValue("keep_alive_min", out v)) s.KeepAliveMin = Convert.ToInt32(v);
+                    if (d.TryGetValue("keep_after_close_min", out v)) s.KeepAfterCloseMin = Convert.ToInt32(v);
+                    if (d.TryGetValue("pause_on_battery", out v)) s.PauseOnBattery = Convert.ToBoolean(v);
                     if (d.TryGetValue("text_scale_pct", out v)) s.TextScalePct = Convert.ToInt32(v);
                     if (d.TryGetValue("focus_first_result", out v)) s.FocusFirstResult = Convert.ToBoolean(v);
                     if (d.TryGetValue("excluded_folders", out v) && v is Dictionary<string, object>)
@@ -264,6 +271,7 @@ namespace HatirMail
             IdleTimeoutS = Math.Max(30, Math.Min(3600, IdleTimeoutS));
             SessionTimeoutS = Math.Max(60, SessionTimeoutS);
             KeepAliveMin = Math.Max(0, Math.Min(120, KeepAliveMin));
+            KeepAfterCloseMin = Math.Max(0, Math.Min(10, KeepAfterCloseMin));
             TextScalePct = ClampTextScale(TextScalePct);
         }
 
@@ -277,7 +285,8 @@ namespace HatirMail
             var d = new Dictionary<string, object> {
                 {"threads", Threads}, {"memory_limit_mb", MemoryLimitMb}, {"search_index_budget_s", SearchIndexBudgetS},
                 {"idle_timeout_s", IdleTimeoutS}, {"session_timeout_s", SessionTimeoutS}, {"attachments", Attachments},
-                {"keep_alive_min", KeepAliveMin}, {"text_scale_pct", TextScalePct}, {"focus_first_result", FocusFirstResult},
+                {"keep_alive_min", KeepAliveMin}, {"keep_after_close_min", KeepAfterCloseMin}, {"pause_on_battery", PauseOnBattery},
+                {"text_scale_pct", TextScalePct}, {"focus_first_result", FocusFirstResult},
                 {"excluded_folders", ExcludedFolders} };
             string tmp = ConfigFile + ".tmp";
             try

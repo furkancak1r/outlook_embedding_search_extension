@@ -187,6 +187,7 @@ def _embed(store, get_encoder, folder_ids, model_rev, batch, window, stop, progr
     distinct = list({h for _, cs in todo for h, _ in cs})
     total = len(distinct) - len(store.has_vectors(distinct, model_rev))
     embedded, reused, stopped, t0, t_enc = 0, 0, False, time.perf_counter(), None
+    tokens = padded = 0  # model input of the saved batches: real tokens / tokens with the padding
     rate = lambda: embedded / max(1e-9, time.perf_counter() - t_enc) if t_enc else 0.0
     i = 0
     while i < len(todo):
@@ -201,7 +202,11 @@ def _embed(store, get_encoder, folder_ids, model_rev, batch, window, stop, progr
         if need and not stopped and not stop():
             enc = get_encoder()
             t_enc = t_enc or time.perf_counter()
-            pairs = sorted(need.items(), key=lambda kv: len(kv[1]))  # similar lengths: less padding
+            # Similar token counts in a batch: less padding (the model computes the padding too). Token counts, not
+            # character counts: 10-26 probe, padding 15.3 % -> 6.1 % of the computed tokens on the long index, 19 % ->
+            # 11 % on the eval index. A stable sort: equal counts keep the mail order.
+            lens = dict(zip(need, enc.lengths(list(need.values()))))
+            pairs = sorted(need.items(), key=lambda kv: lens[kv[0]])
             parts = [pairs[b:b + batch] for b in range(0, len(pairs), batch)]
             running = collections.deque()  # (part, result or future), in batch order
             while parts or running:
@@ -221,6 +226,8 @@ def _embed(store, get_encoder, folder_ids, model_rev, batch, window, stop, progr
                     store.put_vectors(list(zip([h for h, _ in part], vecs)), model_rev)
                 known.update(h for h, _ in part)
                 embedded += len(part)
+                tokens += sum(lens[h] for h, _ in part)
+                padded += max(lens[h] for h, _ in part) * len(part)
                 progress(embedded, total, rate())
         elif need:
             stopped = True  # model work waits for the next run
@@ -232,5 +239,5 @@ def _embed(store, get_encoder, folder_ids, model_rev, batch, window, stop, progr
     if total:
         progress(embedded, total, rate())
     return {"items": len(items), "chunks": sum(len(c) for _, c in todo), "model_chunks": total,
-            "embedded_chunks": embedded, "reused_chunks": reused, "stopped": stopped,
-            "seconds": round(time.perf_counter() - t0, 3)}
+            "embedded_chunks": embedded, "reused_chunks": reused, "stopped": stopped, "tokens": tokens,
+            "padded_tokens": padded, "seconds": round(time.perf_counter() - t0, 3)}

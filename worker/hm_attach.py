@@ -386,6 +386,19 @@ def _load_vc_runtime_first():
         pass
 
 
+# Smaller images are not sent to OCR: social media icons (16-64 px), spacer and tracking pixels, signature logos
+# (about 150 x 50 to 200 x 80 px), small inline pictures. The decoder reads the size from the file header; such an
+# image gives "empty" (kept by its sha256, never tried again). ponytail: a size rule, no image analysis. A crop of one
+# short text line (400 x 30 px) is skipped too; a logo of 300 x 100 px or more costs one OCR run per distinct file.
+# Upgrade path: a setting for the two limits.
+MIN_OCR_SIDE, MIN_OCR_PIXELS = 24, 20_000
+
+
+def ocr_worth(w, h):
+    """True when an image of w x h pixels is big enough for an OCR run."""
+    return min(w, h) >= MIN_OCR_SIDE and w * h >= MIN_OCR_PIXELS
+
+
 def ocr_image(data):
     """Text in an image file (PNG, JPEG, BMP, GIF, TIFF). Uses the OCR languages of the Windows user profile.
     Each WinRT call is waited for with .get() on this thread: no asyncio event loop (that opens a local socket
@@ -398,10 +411,6 @@ def ocr_image(data):
                                                 ExifOrientationMode)
     from winrt.windows.media.ocr import OcrEngine
     from winrt.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
-    if _engine is None:
-        _engine = OcrEngine.try_create_from_user_profile_languages()
-        if _engine is None:  # no OCR language installed for the user's languages
-            raise OcrUnavailable()
     stream = InMemoryRandomAccessStream()
     writer = DataWriter(stream)
     writer.write_bytes(data)
@@ -409,6 +418,12 @@ def ocr_image(data):
     writer.detach_stream()
     stream.seek(0)
     dec = BitmapDecoder.create_async(stream).get()
+    if not ocr_worth(dec.pixel_width, dec.pixel_height):
+        return ""
+    if _engine is None:  # only for an image worth reading
+        _engine = OcrEngine.try_create_from_user_profile_languages()
+        if _engine is None:  # no OCR language installed for the user's languages
+            raise OcrUnavailable()
     tf = BitmapTransform()
     w, h, limit = dec.pixel_width, dec.pixel_height, OcrEngine.max_image_dimension
     if max(w, h) > limit:  # the engine refuses bigger images

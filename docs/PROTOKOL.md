@@ -7,6 +7,8 @@ The attachment messages (8a–8c) are optional: an add-in without `attachments` 
 `filters` is optional: without it the search is not narrowed. Modes `update` and `similar` are new; an add-in that does not
 send them gets the same behavior as before. `done.facets` and `results.similar_to` are additive fields. The `results`
 stage `semantic` (step 8s) and `done.timing.scan_work_s`, `done.timing.semantic_s` are additive too.
+Since 10-26 (branch feature/hiz-ve-enerji), additive: `begin.keep_queries`, `done.timing.query_cached`,
+`done.stats.embed.tokens` and `done.stats.embed.padded_tokens` (see "Query vectors" and "Embedding batches").
 
 The add-in starts `python.exe -I -B -X utf8 hm_worker.py --data <dir> --model <dir> --threads N --memory-mb M` with the
 environment variable `HM_SESSION=<48 hex chars>`. `--memory-mb` (since 10-26, optional, default 0) is the memory limit
@@ -56,6 +58,32 @@ A candidate scores with its best chunk (body or attachment). The source mail is 
 `hl`, `hl_subject` are empty. `results.similar_to`: `null` (the mail is not in the index), `{"eid","subject","embedded":
 false}` (no vectors yet: no results), `{"eid","subject","embedded": true}`.
 
+## Query vectors (`begin.keep_queries`)
+
+`begin.keep_queries` (all modes, optional): the recent and saved searches of the add-in (texts, at most 500; each value
+is cut as the query is: `strip()[:500]`). Not a list of strings: `done/error` "bad keep_queries". Missing: the worker
+neither reads nor writes query vectors (an older add-in, eval).
+
+- Every mode, after the `exclude` step: rows of table `qvecs` that are not in the list, or of another model revision,
+  are deleted. The add-in starts a status check (without preload) after "Son aramaları temizle" and "Kayıtlı aramayı
+  sil", so the vectors of these searches leave the file at once.
+- Search: when the query is in the list and its vector is stored, the semantic and final stages use the stored vector.
+  The model is not loaded for it (no `progress` phase `model` when no chunk needs embedding) and `done.timing.query_cached`
+  is `true`. Else the model encodes the query as before; when the query is in the list, the worker stores the vector
+  after the final results.
+- `qvecs(qkey, model_rev, vec)`: `vec` = the float32 model output (2 KB). `qkey` = sha256 (32 hex) of the encoder kind
+  (fake or `onnx-<ONNX Runtime version>`), the threads per model run and the model input text
+  (`task: search result | query: <query>`). The file holds no query text. The stored vector is the vector that a new
+  encode with the same settings gives, so the results are the same.
+- Index file: `qvecs` is a new table (`CREATE TABLE IF NOT EXISTS`); an older worker ignores it. `INDEX_VERSION` stays 2.
+
+## Embedding batches
+
+The worker sorts the chunks of each window of 64 chunks by their token count (the tokenizer, truncated at 512, without
+padding) before it makes the batches of 8. Less padding: less model work. `done.stats.embed.tokens` = the real tokens of
+the embedded chunks, `padded_tokens` = the tokens with the padding (the model input). A chunk vector can differ from the
+vector of the old order (character count) by one float16 step; stored vectors are not encoded again.
+
 ## Excluded folders (`begin.exclude`)
 
 `begin.exclude` (all modes): folder entry ids that the user excluded from the index (Ayarlar "Klasörleri hariç tut…",
@@ -99,7 +127,7 @@ no limit. When the scope has no semantic index yet, a time-limited search loads 
 
 | # | Direction | Message | Notes |
 |---|---|---|---|
-| 1 | → | `{"op":"begin","session","mode","query","now","top_k","index_budget_s","idle_timeout_s","keep_alive_s","preload","attachments","att_dir","store":{"id","name"},"folders":[{"id","path"}],"exclude":[folder id…],"filters":{"sender","recipient","date_from","date_to","attach"},"similar_eid"}` | `session` must equal `HM_SESSION`, else `done/error` and no file is written. Unknown `mode`: `done/error`. `attachments`: true when the add-in can save attachments into `att_dir` (an existing folder) |
+| 1 | → | `{"op":"begin","session","mode","query","now","top_k","index_budget_s","idle_timeout_s","keep_alive_s","preload","attachments","att_dir","store":{"id","name"},"folders":[{"id","path"}],"exclude":[folder id…],"filters":{"sender","recipient","date_from","date_to","attach"},"similar_eid","keep_queries":[query…]}` | `session` must equal `HM_SESSION`, else `done/error` and no file is written. Unknown `mode`: `done/error`. `attachments`: true when the add-in can save attachments into `att_dir` (an existing folder) |
 | 2 | ← | `{"ev":"hello","pid","proto","index_version","model_rev","mode","coverage","model_ready"}` | `status` mode: `done` follows at once. `model_ready`: the model of this process is loaded already (keep-alive) |
 | 3 | → | `{"op":"manifest","folder","items":[[eid, last_mod, class, date], …],"final":bool}` | pages of ≤ 500 rows; `final` closes a folder. Changed mails are marked "to read" at once |
 | 4 | → | `{"op":"scan_done"}` | |
